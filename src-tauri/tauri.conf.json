@@ -47,7 +47,7 @@
     "updater": {
       "pubkey": "UPDATER_PUBKEY_PLACEHOLDER",
       "endpoints": [
-        "https://github.com/nicegui/smart-job-seeker/releases/latest/download/latest.json"
+        "https://github.com/gitaarik/sjs-desktop/releases/latest/download/latest.json"
       ],
       "windows": {
         "installMode": "passive"

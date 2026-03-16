@@ -28,8 +28,8 @@ sudo apt install libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchel
 ## Build
 
 ```bash
-git clone https://github.com/nicegui/smart-job-seeker.git
-cd smart-job-seeker/desktop
+git clone https://github.com/gitaarik/sjs-desktop.git
+cd sjs-desktop
 
 # Install dependencies
 npm install
