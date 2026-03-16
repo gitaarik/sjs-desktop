@@ -1,0 +1,678 @@
+<script lang="ts">
+  import { onMount, onDestroy, tick } from "svelte";
+
+  // State
+  let serverUrl = "";
+  let apiToken = "";
+  let headed = true;
+  let autoConnect = false;
+  let autoReconnect = true;
+  let status = "disconnected";
+  let chromeVersion: string | null = null;
+  let chromeDownloadPercent = 0;
+  let chromeDownloadStatus = "";
+  let logs: { time: string; message: string }[] = [];
+  let intervention: string | null = null;
+  let configLoaded = false;
+  let activeTab = "connection";
+  let urlError = "";
+  let tokenError = "";
+  let connectionError = "";
+  let userInitiatedConnect = false;
+  let stopped = false;
+  let debugChromeOpen = false;
+  let updateAvailable: string | null = null;
+  let updateBody: string | null = null;
+  let updating = false;
+
+  // Max log entries to keep
+  const MAX_LOGS = 100;
+
+  function addLog(message: string) {
+    const time = new Date().toLocaleTimeString();
+    logs = [...logs.slice(-(MAX_LOGS - 1)), { time, message }];
+  }
+
+  // Sidecar communication via Tauri shell plugin
+  let sidecarProcess: any = null;
+
+  async function sendCommand(cmd: Record<string, unknown>) {
+    if (sidecarProcess) {
+      await sidecarProcess.write(JSON.stringify(cmd) + "\n");
+    }
+  }
+
+  function handleSidecarMessage(line: string) {
+    try {
+      const msg = JSON.parse(line);
+      switch (msg.type) {
+        case "status":
+          if (stopped && msg.status !== "disconnected") break;
+          status = msg.status;
+          if (status === "connected" || status === "scraping") connectionError = "";
+          break;
+        case "log":
+          addLog(msg.message);
+          break;
+        case "error":
+          addLog(`ERROR: ${msg.message}`);
+          if (userInitiatedConnect) connectionError = msg.message;
+          break;
+        case "config":
+          serverUrl = serverUrl || msg.serverUrl || "";
+          apiToken = apiToken || msg.apiToken || "";
+          autoConnect = msg.autoConnect ?? false;
+          headed = msg.headed ?? true;
+          autoReconnect = msg.autoReconnect ?? true;
+          chromeVersion = msg.chromeVersion;
+          configLoaded = true;
+          if (!chromeVersion) activeTab = "chrome";
+          break;
+        case "configured":
+          addLog("Configuration saved");
+          break;
+        case "chromeDownloadProgress":
+          chromeDownloadPercent = msg.percent;
+          chromeDownloadStatus = msg.status;
+          break;
+        case "chromeReady":
+          chromeDownloadPercent = 0;
+          chromeDownloadStatus = "";
+          chromeVersion = msg.version || "installed";
+          addLog("Chrome for Testing ready");
+          break;
+        case "intervention":
+          intervention = msg.interventionType;
+          addLog(`INTERVENTION NEEDED: ${msg.interventionType}`);
+          break;
+        case "chromeDebug":
+          debugChromeOpen = msg.open;
+          break;
+      }
+    } catch {
+      // Not JSON, ignore
+    }
+  }
+
+  onMount(async () => {
+    try {
+      // Import Tauri shell plugin
+      const { Command } = await import("@tauri-apps/plugin-shell");
+      const command = Command.sidecar("binaries/sjs-sidecar");
+
+      let stdoutBuffer = "";
+      command.stdout.on("data", (chunk: string) => {
+        stdoutBuffer += chunk;
+        const lines = stdoutBuffer.split("\n");
+        stdoutBuffer = lines.pop()!; // keep incomplete last line in buffer
+        for (const line of lines) {
+          if (line.trim()) handleSidecarMessage(line);
+        }
+      });
+
+      command.stderr.on("data", (line: string) => {
+        addLog(`[stderr] ${line}`);
+      });
+
+      command.on("close", () => {
+        status = "disconnected";
+        addLog("Sidecar process exited");
+        sidecarProcess = null;
+      });
+
+      sidecarProcess = await command.spawn();
+      addLog("Sidecar started");
+    } catch (err) {
+      addLog(`Failed to start sidecar: ${err}`);
+      // Fallback: load saved config from localStorage for demo
+      configLoaded = true;
+    }
+  });
+
+  onDestroy(() => {
+    if (sidecarProcess) {
+      sendCommand({ type: "stop" });
+    }
+  });
+
+  // Listen for tray events
+  onMount(async () => {
+    try {
+      const { listen } = await import("@tauri-apps/api/event");
+      listen("tray-start", () => handleConnect());
+      listen("tray-stop", () => handleDisconnect());
+      listen("tray-open-chrome", () => sendCommand({ type: "openChrome" }));
+      listen("tray-close-chrome", () => sendCommand({ type: "closeChrome" }));
+    } catch {
+      // Not running in Tauri
+    }
+  });
+
+  // Check for app updates
+  onMount(async () => {
+    try {
+      const { check } = await import("@tauri-apps/plugin-updater");
+      const update = await check();
+      if (update) {
+        updateAvailable = update.version;
+        updateBody = update.body ?? null;
+        addLog(`Update available: v${update.version}`);
+      }
+    } catch {
+      // Not running in Tauri or network error — ignore
+    }
+  });
+
+  async function handleUpdate() {
+    if (updating) return;
+    updating = true;
+    try {
+      const { check } = await import("@tauri-apps/plugin-updater");
+      const { relaunch } = await import("@tauri-apps/plugin-process");
+      const update = await check();
+      if (update) {
+        addLog("Downloading update...");
+        await update.downloadAndInstall();
+        addLog("Update installed, restarting...");
+        await relaunch();
+      }
+    } catch (err) {
+      addLog(`Update failed: ${err}`);
+      updating = false;
+    }
+  }
+
+  // Actions
+  async function handleSaveConfig() {
+    await sendCommand({
+      type: "configure",
+      serverUrl,
+      apiToken,
+      autoConnect,
+      headed,
+      autoReconnect,
+    });
+  }
+
+  function validateForm(): boolean {
+    urlError = "";
+    tokenError = "";
+    connectionError = "";
+    if (!serverUrl.trim()) {
+      urlError = "Server URL is required";
+    } else {
+      try {
+        const u = new URL(serverUrl);
+        if (u.protocol !== "wss:" && u.protocol !== "ws:") {
+          urlError = "Must be a WebSocket URL (wss://...)";
+        }
+      } catch {
+        urlError = "Invalid URL format";
+      }
+    }
+    if (!apiToken.trim()) {
+      tokenError = "API token is required";
+    }
+    return !urlError && !tokenError;
+  }
+
+  async function handleConnect() {
+    if (!validateForm()) return;
+    userInitiatedConnect = true;
+    stopped = false;
+    // Stop first in case sidecar is still connected from a previous session
+    await sendCommand({ type: "stop" });
+    await handleSaveConfig();
+    await sendCommand({ type: "start" });
+  }
+
+  async function handleDisconnect() {
+    status = "disconnected";
+    userInitiatedConnect = false;
+    stopped = true;
+    connectionError = "";
+    await sendCommand({ type: "stop" });
+  }
+
+  async function handleEnsureChrome() {
+    await sendCommand({ type: "ensureChrome" });
+  }
+
+  // Status display
+  $: statusColor = {
+    connected: "#22c55e",
+    scraping: "#3b82f6",
+    connecting: "#f59e0b",
+    authenticating: "#f59e0b",
+    reconnecting: "#f59e0b",
+    disconnected: "#6b7280",
+  }[status] || "#6b7280";
+
+  $: statusLabel = {
+    connected: "Connected",
+    scraping: "Scraping",
+    connecting: "Connecting...",
+    authenticating: "Authenticating...",
+    reconnecting: "Reconnecting...",
+    disconnected: "Disconnected",
+  }[status] || status;
+
+  $: isConnected = status === "connected" || status === "scraping";
+  $: isConnecting = status === "connecting" || status === "authenticating";
+  $: isReconnecting = status === "reconnecting";
+
+  // Keep tray menu in sync with connection state
+  $: hasConfig = !!(serverUrl.trim() && apiToken.trim());
+  $: hasChrome = !!chromeVersion;
+  $: if (configLoaded) updateTrayState(status, hasConfig, hasChrome, debugChromeOpen);
+
+  async function updateTrayState(currentStatus: string, currentHasConfig: boolean, currentHasChrome: boolean, currentDebugChromeOpen: boolean) {
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      await invoke("update_tray_state", { status: currentStatus, hasConfig: currentHasConfig, hasChrome: currentHasChrome, debugChromeOpen: currentDebugChromeOpen });
+    } catch {
+      // Not running in Tauri
+    }
+  }
+</script>
+
+<main>
+  <header>
+    <h1>Smart Job Seeker</h1>
+    <div class="status-badge" style="background: {statusColor}">
+      {statusLabel}
+    </div>
+  </header>
+
+  <!-- Update Banner -->
+  {#if updateAvailable}
+    <section class="update-banner">
+      <span>Version {updateAvailable} is available.</span>
+      <button class="btn-primary btn-sm" on:click={handleUpdate} disabled={updating}>
+        {updating ? "Updating..." : "Update now"}
+      </button>
+    </section>
+  {/if}
+
+  <!-- Intervention Alert -->
+  {#if intervention}
+    <section class="intervention">
+      <p>Manual action needed: <strong>{intervention}</strong></p>
+      <p>Switch to the Chrome window to resolve.</p>
+      <button class="btn-secondary" on:click={() => (intervention = null)}>Dismiss</button>
+    </section>
+  {/if}
+
+  <!-- Tabs -->
+  <nav class="tabs">
+    <button class="tab" class:active={activeTab === "connection"} on:click={() => (activeTab = "connection")}>Connection</button>
+    <button class="tab" class:active={activeTab === "chrome"} on:click={() => (activeTab = "chrome")}>Chrome</button>
+    <button class="tab" class:active={activeTab === "log"} on:click={() => (activeTab = "log")}>Activity Log</button>
+  </nav>
+
+  {#if activeTab === "connection"}
+    <section class="settings">
+      {#if connectionError}
+        <div class="form-error-banner">{connectionError}</div>
+      {/if}
+
+      <label>
+        Server URL
+        <input
+          type="text"
+          bind:value={serverUrl}
+          placeholder="wss://smartjobseeker.com/tunnel"
+          disabled={isConnected || isConnecting || isReconnecting}
+          class:input-error={urlError}
+          on:input={() => (urlError = "")}
+        />
+        {#if urlError}<span class="field-error">{urlError}</span>{/if}
+      </label>
+
+      <label>
+        API Token
+        <input
+          type="password"
+          bind:value={apiToken}
+          placeholder="sjs_..."
+          disabled={isConnected || isConnecting || isReconnecting}
+          class:input-error={tokenError}
+          on:input={() => (tokenError = "")}
+        />
+        {#if tokenError}<span class="field-error">{tokenError}</span>{/if}
+      </label>
+
+      <label class="checkbox">
+        <input type="checkbox" bind:checked={autoConnect} disabled={!isConnected && !autoConnect} on:change={async () => { await tick(); handleSaveConfig(); }} />
+        Connect automatically on startup
+      </label>
+
+      <label class="checkbox">
+        <input type="checkbox" bind:checked={headed} disabled={isConnected || isConnecting || isReconnecting} on:change={async () => { await tick(); handleSaveConfig(); }} />
+        Show browser window (recommended for CAPTCHA solving)
+      </label>
+
+      <label class="checkbox">
+        <input type="checkbox" bind:checked={autoReconnect} on:change={async () => { await tick(); handleSaveConfig(); }} />
+        Auto-reconnect on unexpected disconnect
+      </label>
+
+      <div class="actions">
+        {#if isConnected}
+          <button class="btn-danger" on:click={handleDisconnect}>Disconnect</button>
+        {:else if isConnecting}
+          <button class="btn-danger" on:click={handleDisconnect}>Cancel</button>
+        {:else if isReconnecting}
+          <button class="btn-danger" on:click={handleDisconnect}>Cancel</button>
+        {:else}
+          <button class="btn-primary" on:click={handleConnect}>Connect</button>
+        {/if}
+      </div>
+    </section>
+  {:else if activeTab === "chrome"}
+    <section class="chrome-section">
+      {#if chromeVersion}
+        <p class="chrome-status">Installed: v{chromeVersion}</p>
+      {:else}
+        <p class="chrome-status">Not installed</p>
+      {/if}
+
+      {#if chromeDownloadStatus}
+        <div class="progress">
+          <div class="progress-bar" style="width: {chromeDownloadPercent}%"></div>
+          <span class="progress-text">{chromeDownloadStatus}</span>
+        </div>
+      {:else}
+        <div class="chrome-actions">
+          <button class="btn-secondary" on:click={handleEnsureChrome}>
+            {chromeVersion ? "Check for Updates" : "Download Chrome"}
+          </button>
+          <button
+            class="btn-secondary"
+            disabled={!chromeVersion || isConnected || isConnecting || isReconnecting}
+            on:click={() => sendCommand({ type: debugChromeOpen ? "closeChrome" : "openChrome" })}
+          >
+            {debugChromeOpen ? "Close Browser" : "Open Browser"}
+          </button>
+        </div>
+      {/if}
+    </section>
+  {:else if activeTab === "log"}
+    <section class="log-section">
+      <div class="log">
+        {#each logs as entry}
+          <div class="log-entry">
+            <span class="log-time">{entry.time}</span>
+            <span class="log-msg">{entry.message}</span>
+          </div>
+        {/each}
+        {#if logs.length === 0}
+          <div class="log-empty">No activity yet</div>
+        {/if}
+      </div>
+    </section>
+  {/if}
+</main>
+
+<style>
+  main {
+    max-width: 760px;
+    margin: 0 auto;
+  }
+
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 24px;
+  }
+
+  h1 {
+    font-size: 18px;
+    font-weight: 600;
+    margin: 0;
+  }
+
+  h2 {
+    font-size: 14px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-secondary);
+    margin: 0 0 12px 0;
+  }
+
+  .tabs {
+    display: flex;
+    gap: 2px;
+    margin-bottom: 16px;
+    background: var(--bg-surface);
+    border-radius: 8px;
+    padding: 4px;
+  }
+
+  .tab {
+    flex: 1;
+    padding: 8px 12px;
+    border-radius: 6px;
+    border: none;
+    background: transparent;
+    color: var(--text-muted);
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+  }
+
+  .tab:hover {
+    color: var(--text-secondary);
+    opacity: 1;
+  }
+
+  .tab.active {
+    background: var(--bg-elevated);
+    color: var(--text-primary);
+  }
+
+  .status-badge {
+    padding: 4px 12px;
+    border-radius: 12px;
+    font-size: 12px;
+    font-weight: 600;
+    color: white;
+  }
+
+  section {
+    background: var(--bg-surface);
+    border-radius: 8px;
+    padding: 16px;
+    margin-bottom: 16px;
+  }
+
+  label {
+    display: block;
+    margin-bottom: 12px;
+    font-size: 13px;
+    color: var(--text-secondary);
+  }
+
+  label.checkbox {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+  }
+
+  input[type="text"],
+  input[type="password"] {
+    display: block;
+    width: 100%;
+    margin-top: 4px;
+    padding: 8px 12px;
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text-primary);
+    font-size: 14px;
+    box-sizing: border-box;
+  }
+
+  input[type="text"]:focus,
+  input[type="password"]:focus {
+    outline: none;
+    border-color: var(--focus);
+  }
+
+  input:disabled {
+    opacity: 0.5;
+  }
+
+  .input-error {
+    border-color: var(--error-input) !important;
+  }
+
+  .field-error {
+    display: block;
+    color: var(--error-field);
+    font-size: 12px;
+    margin-top: 4px;
+  }
+
+  .form-error-banner {
+    background: var(--error-bg);
+    border: 1px solid var(--error-border);
+    color: var(--error-text);
+    border-radius: 6px;
+    padding: 8px 12px;
+    font-size: 13px;
+    margin-bottom: 12px;
+  }
+
+  .actions {
+    display: flex;
+    gap: 8px;
+    margin-top: 16px;
+  }
+
+  button {
+    padding: 8px 16px;
+    border-radius: 6px;
+    border: none;
+    font-size: 14px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: opacity 0.2s;
+  }
+
+  button:hover {
+    opacity: 0.9;
+  }
+
+  button:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+
+  .btn-primary {
+    background: var(--btn-primary-bg);
+    color: var(--btn-primary-text);
+  }
+
+  .btn-secondary {
+    background: var(--btn-secondary-bg);
+    color: var(--btn-secondary-text);
+  }
+
+  .btn-danger {
+    background: var(--btn-danger-bg);
+    color: var(--btn-danger-text);
+  }
+
+  .chrome-actions {
+    display: flex;
+    gap: 8px;
+  }
+
+  .chrome-section .chrome-status {
+    margin: 0 0 12px 0;
+    font-size: 13px;
+    color: var(--text-secondary);
+  }
+
+  .progress {
+    position: relative;
+    height: 24px;
+    background: var(--progress-bg);
+    border-radius: 4px;
+    overflow: hidden;
+  }
+
+  .progress-bar {
+    height: 100%;
+    background: var(--progress-fill);
+    transition: width 0.3s ease;
+  }
+
+  .progress-text {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 12px;
+    font-weight: 500;
+  }
+
+  .intervention {
+    background: var(--intervention-bg);
+    border: 1px solid var(--intervention-border);
+  }
+
+  .intervention p {
+    margin: 0 0 8px 0;
+  }
+
+  .log {
+    padding: 8px;
+    max-height: 300px;
+    overflow-y: auto;
+    font-family: "SF Mono", "Fira Code", monospace;
+    font-size: 12px;
+  }
+
+  .log-entry {
+    padding: 2px 4px;
+    display: flex;
+    gap: 8px;
+  }
+
+  .log-time {
+    color: var(--text-faint);
+    flex-shrink: 0;
+  }
+
+  .log-msg {
+    color: var(--text-secondary);
+    word-break: break-word;
+  }
+
+  .log-empty {
+    color: var(--text-faint);
+    text-align: center;
+    padding: 16px;
+  }
+
+  .update-banner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    background: var(--bg-elevated);
+    border: 1px solid var(--focus);
+    font-size: 13px;
+  }
+
+  .btn-sm {
+    padding: 4px 12px;
+    font-size: 12px;
+  }
+</style>

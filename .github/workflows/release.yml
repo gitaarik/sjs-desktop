@@ -1,0 +1,121 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: ubuntu-22.04
+            rust_target: ""
+            sidecar_pkg_target: node20-linux-x64
+            sidecar_triple: x86_64-unknown-linux-gnu
+          - platform: macos-latest
+            rust_target: aarch64-apple-darwin
+            sidecar_pkg_target: node20-macos-arm64
+            sidecar_triple: aarch64-apple-darwin
+          - platform: macos-latest
+            rust_target: x86_64-apple-darwin
+            sidecar_pkg_target: node20-macos-x64
+            sidecar_triple: x86_64-apple-darwin
+          - platform: windows-latest
+            rust_target: ""
+            sidecar_pkg_target: node20-win-x64
+            sidecar_triple: x86_64-pc-windows-msvc
+
+    runs-on: ${{ matrix.platform }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_target }}
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri
+
+      # Linux system dependencies for Tauri
+      - name: Install Linux dependencies
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      # Install Node dependencies
+      - name: Install dependencies
+        working-directory: desktop
+        run: |
+          npm ci
+          cd src/ui && npm ci
+
+      # Build sidecar as standalone native binary (no Node.js required at runtime)
+      - name: Build sidecar
+        working-directory: desktop
+        run: |
+          npx esbuild src/main/sidecar.ts --bundle --platform=node --outfile=dist/sidecar-bundle.cjs --format=cjs
+          npx @yao-pkg/pkg dist/sidecar-bundle.cjs --target ${{ matrix.sidecar_pkg_target }} --output src-tauri/binaries/sjs-sidecar-${{ matrix.sidecar_triple }}${{ matrix.platform == 'windows-latest' && '.exe' || '' }}
+
+      # Build UI
+      - name: Build UI
+        working-directory: desktop/src/ui
+        run: npm run build
+
+      # Build Tauri app and create GitHub Release
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Updater signing key (generate with: npx tauri signer generate)
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # macOS code signing (optional, but recommended)
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        with:
+          projectPath: desktop
+          tagName: v__VERSION__
+          releaseName: "Smart Job Seeker v__VERSION__"
+          releaseBody: |
+            ## Download
+
+            Pick the installer for your platform:
+
+            - **macOS (Apple Silicon)** — `.dmg` file (aarch64)
+            - **macOS (Intel)** — `.dmg` file (x64)
+            - **Windows** — `.msi` or `.exe` installer
+            - **Linux** — `.AppImage` (universal) or `.deb` (Debian/Ubuntu)
+
+            ## First launch
+
+            The app downloads Chrome for Testing (~175MB) on first launch. This is a one-time download.
+
+            ## Platform notes
+
+            **macOS**: If you see "unidentified developer", right-click the app and choose **Open**, then click **Open** again in the dialog.
+
+            **Windows**: If SmartScreen shows a warning, click **More info** then **Run anyway**.
+
+            ## Build from source
+
+            See [BUILD.md](https://github.com/nicegui/smart-job-seeker/blob/master/desktop/BUILD.md) for instructions.
+          releaseDraft: true
+          prerelease: false
+          args: ${{ matrix.rust_target && format('--target {0}', matrix.rust_target) || '' }}

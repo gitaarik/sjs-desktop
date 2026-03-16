@@ -1,0 +1,15 @@
+node_modules/
+dist/
+release/
+
+# Tauri
+src-tauri/target/
+src-tauri/gen/
+
+# UI
+src/ui/dist/
+src/ui/node_modules/
+
+# Sidecar binaries (build artifacts)
+sidecar/
+src-tauri/binaries/sjs-sidecar-*

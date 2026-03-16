@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" href="/favicon.svg" />
+    <title>Smart Job Seeker</title>
+    <style>
+      :root {
+        --bg-base: #0f172a;
+        --bg-surface: #1e293b;
+        --bg-elevated: #334155;
+        --bg-input: #0f172a;
+        --text-primary: #e2e8f0;
+        --text-secondary: #94a3b8;
+        --text-muted: #64748b;
+        --text-faint: #475569;
+        --border: #334155;
+        --focus: #3b82f6;
+        --btn-primary-bg: #3b82f6;
+        --btn-primary-text: white;
+        --btn-secondary-bg: #334155;
+        --btn-secondary-text: #e2e8f0;
+        --btn-danger-bg: #ef4444;
+        --btn-danger-text: white;
+        --error-bg: #7f1d1d;
+        --error-border: #ef4444;
+        --error-text: #fca5a5;
+        --error-field: #f87171;
+        --error-input: #ef4444;
+        --intervention-bg: #7c2d12;
+        --intervention-border: #ea580c;
+        --progress-bg: #0f172a;
+        --progress-fill: #3b82f6;
+      }
+      @media (prefers-color-scheme: light) {
+        :root {
+          --bg-base: #f8fafc;
+          --bg-surface: #e2e8f0;
+          --bg-elevated: #cbd5e1;
+          --bg-input: #ffffff;
+          --text-primary: #0f172a;
+          --text-secondary: #475569;
+          --text-muted: #64748b;
+          --text-faint: #94a3b8;
+          --border: #cbd5e1;
+          --focus: #2563eb;
+          --btn-primary-bg: #2563eb;
+          --btn-primary-text: white;
+          --btn-secondary-bg: #cbd5e1;
+          --btn-secondary-text: #1e293b;
+          --btn-danger-bg: #dc2626;
+          --btn-danger-text: white;
+          --error-bg: #fef2f2;
+          --error-border: #ef4444;
+          --error-text: #991b1b;
+          --error-field: #dc2626;
+          --error-input: #ef4444;
+          --intervention-bg: #fff7ed;
+          --intervention-border: #ea580c;
+          --progress-bg: #e2e8f0;
+          --progress-fill: #2563eb;
+        }
+      }
+      html, body { margin: 0; background: var(--bg-base); color: var(--text-primary); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; font-size: 14px; }
+      #app { padding: 20px; }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

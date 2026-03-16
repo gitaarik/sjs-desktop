@@ -1,0 +1,57 @@
+{
+  "$schema": "https://raw.githubusercontent.com/nicegui/tauri/dev/crates/tauri-cli/schema.json",
+  "productName": "Smart Job Seeker",
+  "version": "0.1.0",
+  "identifier": "com.smartjobseeker.desktop",
+  "build": {
+    "frontendDist": "../src/ui/dist",
+    "devUrl": "http://localhost:5173",
+    "beforeBuildCommand": "",
+    "beforeDevCommand": "npm run sidecar:dev && cd src/ui && npm run dev"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "label": "main",
+        "title": "Smart Job Seeker",
+        "width": 800,
+        "height": 800,
+        "resizable": true,
+        "visible": false,
+        "center": true,
+        "decorations": true,
+        "backgroundColor": "#0f172a",
+        "minWidth": 400,
+        "minHeight": 500
+      }
+    ],
+    "trayIcon": null
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.ico"
+    ],
+    "externalBin": ["binaries/sjs-sidecar"],
+    "createUpdaterArtifacts": true
+  },
+  "plugins": {
+    "shell": {
+      "open": true
+    },
+    "updater": {
+      "pubkey": "UPDATER_PUBKEY_PLACEHOLDER",
+      "endpoints": [
+        "https://github.com/nicegui/smart-job-seeker/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
+  }
+}
