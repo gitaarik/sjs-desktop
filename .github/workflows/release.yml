@@ -132,6 +132,6 @@ jobs:
             ## Build from source
 
             See [BUILD.md](https://github.com/gitaarik/sjs-desktop/blob/main/BUILD.md) for instructions.
-          releaseDraft: true
+          releaseDraft: false
           prerelease: false
           args: ${{ matrix.rust_target && format('--target {0}', matrix.rust_target) || '' }}
