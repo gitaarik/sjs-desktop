@@ -1,7 +1,7 @@
 {
   "name": "sjs-desktop",
   "productName": "Smart Job Seeker",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "description": "Desktop app for Smart Job Seeker — runs Chrome locally for scraping with real residential IP",
   "main": "dist/main/index.js",
   "scripts": {
