@@ -568,6 +568,158 @@ async function handleMouseMove(
   log(`Moved mouse locally (${steps.length} points)`);
 }
 
+/** Convert a CDP content quad [x1,y1,x2,y2,x3,y3,x4,y4] to a bounding box. */
+function quadToBox(quad: number[]): { x: number; y: number; width: number; height: number } {
+  const xs = [quad[0], quad[2], quad[4], quad[6]];
+  const ys = [quad[1], quad[3], quad[5], quad[7]];
+  const minX = Math.min(...xs);
+  const minY = Math.min(...ys);
+  return { x: minX, y: minY, width: Math.max(...xs) - minX, height: Math.max(...ys) - minY };
+}
+
+/**
+ * Compute a natural bezier curve path with tremor between two points.
+ * Mirrors the logic in stealth-utils.ts naturalMouseMove.
+ */
+function computeBezierPath(
+  fromX: number, fromY: number, toX: number, toY: number,
+): { x: number; y: number; delayMs: number }[] {
+  const steps = 15 + Math.floor(Math.random() * 15);
+  const dx = toX - fromX;
+  const dy = toY - fromY;
+  const dist = Math.sqrt(dx * dx + dy * dy);
+
+  if (dist < 5) return [{ x: toX, y: toY, delayMs: 0 }];
+
+  const arcAmount = dist * (0.1 + Math.random() * 0.2) * (Math.random() < 0.5 ? 1 : -1);
+  const perpX = -dy / dist;
+  const perpY = dx / dist;
+  const cpX = (fromX + toX) / 2 + perpX * arcAmount;
+  const cpY = (fromY + toY) / 2 + perpY * arcAmount;
+
+  const points: { x: number; y: number; delayMs: number }[] = [];
+  for (let i = 1; i <= steps; i++) {
+    const linear = i / steps;
+    const t = linear * linear * (3 - 2 * linear);
+    const oneMinusT = 1 - t;
+    let x = oneMinusT * oneMinusT * fromX + 2 * oneMinusT * t * cpX + t * t * toX;
+    let y = oneMinusT * oneMinusT * fromY + 2 * oneMinusT * t * cpY + t * t * toY;
+
+    if (i < steps) {
+      const tremorFade = Math.max(0, 1 - Math.max(0, (linear - 0.8) / 0.2));
+      const tremorAmount = 2 * tremorFade;
+      x += (Math.random() - 0.5) * tremorAmount;
+      y += (Math.random() - 0.5) * tremorAmount;
+    }
+
+    const delayMs = i < steps
+      ? Math.round((4 + Math.random() * 6) * (1 - 0.6 * Math.sin(linear * Math.PI)))
+      : 0;
+
+    points.push({ x, y, delayMs });
+  }
+  return points;
+}
+
+/**
+ * Click an element locally via direct CDP.
+ * Executes: find element -> scroll into view -> get bounding box ->
+ * compute random offset -> move mouse naturally -> click.
+ */
+async function handleClickElement(
+  requestId: string,
+  selector: string,
+  timeout: number,
+): Promise<void> {
+  await withDirectPageCdp("clickElement", timeout + 5000, async (pageWs, nextId) => {
+    // Helper to send a CDP command and await its response
+    const cdpCall = <T = Record<string, unknown>>(method: string, params: Record<string, unknown> = {}): Promise<T> => {
+      return new Promise((resolve, reject) => {
+        const id = nextId();
+        const timer = setTimeout(() => {
+          pageWs.removeListener("message", onMsg);
+          reject(new Error(`${method} timeout`));
+        }, timeout);
+
+        const onMsg = (raw: WebSocket.RawData) => {
+          try {
+            const msg = JSON.parse(raw.toString());
+            if (msg.id === id) {
+              clearTimeout(timer);
+              pageWs.removeListener("message", onMsg);
+              if (msg.error) reject(new Error(`${method}: ${msg.error.message}`));
+              else resolve((msg.result || {}) as T);
+            }
+          } catch { /* not our message */ }
+        };
+
+        pageWs.on("message", onMsg);
+        pageWs.send(JSON.stringify({ id, method, params }));
+      });
+    };
+
+    // 1. Find the element
+    const { root } = await cdpCall<{ root: { nodeId: number } }>("DOM.getDocument", { depth: 0 });
+    const { nodeId } = await cdpCall<{ nodeId: number }>("DOM.querySelector", {
+      nodeId: root.nodeId,
+      selector,
+    });
+    if (!nodeId) throw new Error(`Element not found: ${selector}`);
+
+    // 2. Scroll element into view
+    await cdpCall("DOM.scrollIntoViewIfNeeded", { nodeId });
+    await new Promise((r) => setTimeout(r, 100));
+
+    // 3. Get bounding box
+    const { model } = await cdpCall<{ model: { content: number[] } }>("DOM.getBoxModel", { nodeId });
+    if (!model?.content || model.content.length < 8) {
+      throw new Error(`Cannot get bounding box for: ${selector}`);
+    }
+    const box = quadToBox(model.content);
+
+    // 4. Calculate target point with slight randomness (inner 80%)
+    const paddingX = box.width * 0.1;
+    const paddingY = box.height * 0.1;
+    const targetX = box.x + paddingX + Math.random() * (box.width - 2 * paddingX);
+    const targetY = box.y + paddingY + Math.random() * (box.height - 2 * paddingY);
+
+    // 5. Move mouse along natural bezier path
+    const fromX = 1280 * (0.2 + Math.random() * 0.6);
+    const fromY = 800 * (0.2 + Math.random() * 0.6);
+    const path = computeBezierPath(fromX, fromY, targetX, targetY);
+
+    for (const point of path) {
+      pageWs.send(JSON.stringify({
+        id: nextId(),
+        method: "Input.dispatchMouseEvent",
+        params: { type: "mouseMoved", x: point.x, y: point.y },
+      }));
+      if (point.delayMs > 0) {
+        await new Promise((r) => setTimeout(r, point.delayMs));
+      }
+    }
+
+    // 6. Small pause before clicking
+    await new Promise((r) => setTimeout(r, 50 + Math.random() * 100));
+
+    // 7. Click
+    pageWs.send(JSON.stringify({
+      id: nextId(),
+      method: "Input.dispatchMouseEvent",
+      params: { type: "mousePressed", x: targetX, y: targetY, button: "left", clickCount: 1 },
+    }));
+    await new Promise((r) => setTimeout(r, 30 + Math.random() * 50));
+    pageWs.send(JSON.stringify({
+      id: nextId(),
+      method: "Input.dispatchMouseEvent",
+      params: { type: "mouseReleased", x: targetX, y: targetY, button: "left", clickCount: 1 },
+    }));
+  });
+
+  send({ type: "clickElementResponse", requestId, success: true });
+  log(`Clicked element locally: ${selector}`);
+}
+
 async function handleCdpVersionRequest(): Promise<void> {
   if (!currentChromeSession) {
     log("CDP version request but no Chrome session");
@@ -661,6 +813,14 @@ function handleMessage(rawData: WebSocket.RawData): void {
       handleScreenshotRequest(msg.requestId, msg.format || "jpeg", msg.quality ?? 50).catch((err) => {
         log(`ERROR: screenshot failed: ${err instanceof Error ? err.message : String(err)}`);
         send({ type: "screenshotResponse", requestId: msg.requestId, data: null });
+      });
+      break;
+
+    case "clickElement":
+      handleClickElement(msg.requestId, msg.selector, msg.timeout).catch((err) => {
+        const error = err instanceof Error ? err.message : String(err);
+        log(`ERROR: clickElement failed: ${error}`);
+        send({ type: "clickElementResponse", requestId: msg.requestId, success: false, error });
       });
       break;
 

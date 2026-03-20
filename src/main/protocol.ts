@@ -104,6 +104,14 @@ export interface TunnelScreenshotRequest {
   quality?: number;
 }
 
+export interface TunnelClickElement {
+  type: "clickElement";
+  requestId: string;
+  selector: string;
+  /** Click timeout in ms (default 5000) */
+  timeout: number;
+}
+
 export interface TunnelPing {
   type: "ping";
 }
@@ -117,6 +125,13 @@ export interface TunnelScreenshotResponse {
   requestId: string;
   /** base64-encoded image data, or null on failure */
   data: string | null;
+}
+
+export interface TunnelClickElementResponse {
+  type: "clickElementResponse";
+  requestId: string;
+  success: boolean;
+  error?: string;
 }
 
 // ============================================================================
@@ -148,6 +163,7 @@ export type ServerMessage =
   | TunnelScrollWheel
   | TunnelMouseMove
   | TunnelScreenshotRequest
+  | TunnelClickElement
   | TunnelCdpMessage
   | TunnelCdpBinary
   | TunnelPing;
@@ -158,6 +174,7 @@ export type ClientMessage =
   | TunnelSessionError
   | TunnelCdpVersionResponse
   | TunnelScreenshotResponse
+  | TunnelClickElementResponse
   | TunnelCdpMessage
   | TunnelCdpBinary
   | TunnelPong;
