@@ -626,10 +626,19 @@ function computeBezierPath(
  * Executes: find element -> scroll into view -> get bounding box ->
  * compute random offset -> move mouse naturally -> click.
  */
+/** Map modifier name to CDP key code + modifier bitmask */
+const MODIFIER_MAP: Record<string, { key: string; code: string; keyCode: number; bit: number }> = {
+  Control: { key: "Control", code: "ControlLeft", keyCode: 17, bit: 2 },
+  Shift:   { key: "Shift",   code: "ShiftLeft",   keyCode: 16, bit: 8 },
+  Alt:     { key: "Alt",     code: "AltLeft",      keyCode: 18, bit: 1 },
+  Meta:    { key: "Meta",    code: "MetaLeft",     keyCode: 91, bit: 4 },
+};
+
 async function handleClickElement(
   requestId: string,
   selector: string,
   timeout: number,
+  modifiers?: string[],
 ): Promise<void> {
   await withDirectPageCdp("clickElement", timeout + 5000, async (pageWs, nextId) => {
     // Helper to send a CDP command and await its response
@@ -702,22 +711,48 @@ async function handleClickElement(
     // 6. Small pause before clicking
     await new Promise((r) => setTimeout(r, 50 + Math.random() * 100));
 
-    // 7. Click
+    // 7. Press modifier keys (if any)
+    const modifierBitmask = (modifiers || []).reduce((mask, mod) => {
+      const info = MODIFIER_MAP[mod];
+      if (info) {
+        pageWs.send(JSON.stringify({
+          id: nextId(),
+          method: "Input.dispatchKeyEvent",
+          params: { type: "rawKeyDown", key: info.key, code: info.code, windowsVirtualKeyCode: info.keyCode, modifiers: mask | info.bit },
+        }));
+        return mask | info.bit;
+      }
+      return mask;
+    }, 0);
+
+    // 8. Click (with modifier bitmask on mouse events)
     pageWs.send(JSON.stringify({
       id: nextId(),
       method: "Input.dispatchMouseEvent",
-      params: { type: "mousePressed", x: targetX, y: targetY, button: "left", clickCount: 1 },
+      params: { type: "mousePressed", x: targetX, y: targetY, button: "left", clickCount: 1, modifiers: modifierBitmask },
     }));
     await new Promise((r) => setTimeout(r, 30 + Math.random() * 50));
     pageWs.send(JSON.stringify({
       id: nextId(),
       method: "Input.dispatchMouseEvent",
-      params: { type: "mouseReleased", x: targetX, y: targetY, button: "left", clickCount: 1 },
+      params: { type: "mouseReleased", x: targetX, y: targetY, button: "left", clickCount: 1, modifiers: modifierBitmask },
     }));
+
+    // 9. Release modifier keys (in reverse order)
+    for (const mod of (modifiers || []).slice().reverse()) {
+      const info = MODIFIER_MAP[mod];
+      if (info) {
+        pageWs.send(JSON.stringify({
+          id: nextId(),
+          method: "Input.dispatchKeyEvent",
+          params: { type: "keyUp", key: info.key, code: info.code, windowsVirtualKeyCode: info.keyCode },
+        }));
+      }
+    }
   });
 
   send({ type: "clickElementResponse", requestId, success: true });
-  log(`Clicked element locally: ${selector}`);
+  log(`Clicked element locally: ${selector}${modifiers?.length ? ` [${modifiers.join("+")}]` : ""}`);
 }
 
 /**
@@ -926,7 +961,7 @@ function handleMessage(rawData: WebSocket.RawData): void {
       break;
 
     case "clickElement":
-      handleClickElement(msg.requestId, msg.selector, msg.timeout).catch((err) => {
+      handleClickElement(msg.requestId, msg.selector, msg.timeout, msg.modifiers).catch((err) => {
         const error = err instanceof Error ? err.message : String(err);
         log(`ERROR: clickElement failed: ${error}`);
         send({ type: "clickElementResponse", requestId: msg.requestId, success: false, error });

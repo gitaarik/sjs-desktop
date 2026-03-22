@@ -110,6 +110,8 @@ export interface TunnelClickElement {
   selector: string;
   /** Click timeout in ms (default 5000) */
   timeout: number;
+  /** Keyboard modifiers to hold during click (e.g. ["Control"] for Ctrl+click) */
+  modifiers?: ("Control" | "Shift" | "Alt" | "Meta")[];
 }
 
 export interface TunnelScrollRevealLazyContent {
