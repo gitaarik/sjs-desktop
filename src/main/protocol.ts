@@ -112,6 +112,17 @@ export interface TunnelClickElement {
   timeout: number;
 }
 
+export interface TunnelScrollRevealLazyContent {
+  type: "scrollRevealLazyContent";
+  requestId: string;
+  /** Viewport dimensions for mouse positioning */
+  viewport: { width: number; height: number };
+  /** Max scroll rounds (default: 10) */
+  maxRounds: number;
+  /** Consecutive no-change rounds before stopping (default: 3) */
+  noChangeLimit: number;
+}
+
 export interface TunnelPing {
   type: "ping";
 }
@@ -119,6 +130,17 @@ export interface TunnelPing {
 // ============================================================================
 // Desktop App → Server (continued)
 // ============================================================================
+
+export interface TunnelScrollRevealLazyContentResponse {
+  type: "scrollRevealLazyContentResponse";
+  requestId: string;
+  success: boolean;
+  /** Total scroll steps performed */
+  totalScrollSteps: number;
+  /** Final scroll height */
+  finalHeight: number;
+  error?: string;
+}
 
 export interface TunnelScreenshotResponse {
   type: "screenshotResponse";
@@ -164,6 +186,7 @@ export type ServerMessage =
   | TunnelMouseMove
   | TunnelScreenshotRequest
   | TunnelClickElement
+  | TunnelScrollRevealLazyContent
   | TunnelCdpMessage
   | TunnelCdpBinary
   | TunnelPing;
@@ -175,6 +198,7 @@ export type ClientMessage =
   | TunnelCdpVersionResponse
   | TunnelScreenshotResponse
   | TunnelClickElementResponse
+  | TunnelScrollRevealLazyContentResponse
   | TunnelCdpMessage
   | TunnelCdpBinary
   | TunnelPong;

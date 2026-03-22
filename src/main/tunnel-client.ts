@@ -720,6 +720,115 @@ async function handleClickElement(
   log(`Clicked element locally: ${selector}`);
 }
 
+/**
+ * Scroll through the page to reveal lazy-loaded content, entirely locally.
+ * Uses real mouse wheel CDP events + Runtime.evaluate for height checks.
+ * Returns when content stops growing or max rounds reached.
+ */
+async function handleScrollRevealLazyContent(
+  requestId: string,
+  viewport: { width: number; height: number },
+  maxRounds: number,
+  noChangeLimit: number,
+): Promise<void> {
+  await withDirectPageCdp("scrollRevealLazyContent", 60_000, async (pageWs, nextId) => {
+    // Helper to send a CDP command and await its response
+    const cdpCall = <T = Record<string, unknown>>(method: string, params: Record<string, unknown> = {}): Promise<T> => {
+      return new Promise((resolve, reject) => {
+        const id = nextId();
+        const timer = setTimeout(() => {
+          pageWs.removeListener("message", onMsg);
+          reject(new Error(`${method} timeout`));
+        }, 10_000);
+
+        const onMsg = (raw: WebSocket.RawData) => {
+          try {
+            const msg = JSON.parse(raw.toString());
+            if (msg.id === id) {
+              clearTimeout(timer);
+              pageWs.removeListener("message", onMsg);
+              if (msg.error) reject(new Error(`${method}: ${msg.error.message}`));
+              else resolve((msg.result || {}) as T);
+            }
+          } catch { /* not our message */ }
+        };
+
+        pageWs.on("message", onMsg);
+        pageWs.send(JSON.stringify({ id, method, params }));
+      });
+    };
+
+    // Get initial scroll height
+    const { result: initialResult } = await cdpCall<{ result: { value: number } }>(
+      "Runtime.evaluate",
+      { expression: "document.documentElement.scrollHeight", returnByValue: true },
+    );
+    let previousHeight = initialResult.value;
+    let totalScrollSteps = 0;
+    let noChangeCount = 0;
+
+    for (let round = 0; round < maxRounds && noChangeCount < noChangeLimit; round++) {
+      // Randomize mouse position within viewport
+      const mouseX = viewport.width * (0.3 + Math.random() * 0.4);
+      const mouseY = viewport.height * (0.3 + Math.random() * 0.3);
+      const steps = 2 + Math.floor(Math.random() * 3); // 2-4 steps
+
+      // Move mouse to scroll position
+      pageWs.send(JSON.stringify({
+        id: nextId(),
+        method: "Input.dispatchMouseEvent",
+        params: { type: "mouseMoved", x: mouseX, y: mouseY },
+      }));
+
+      // Scroll with real mouse wheel events
+      for (let i = 0; i < steps; i++) {
+        const deltaY = 500 + (Math.random() - 0.5) * 400; // 300-700
+        pageWs.send(JSON.stringify({
+          id: nextId(),
+          method: "Input.dispatchMouseEvent",
+          params: { type: "mouseWheel", x: mouseX, y: mouseY, deltaX: 0, deltaY },
+        }));
+        const delayMs = 80 + Math.random() * 60; // 80-140ms
+        await new Promise((r) => setTimeout(r, delayMs));
+      }
+      totalScrollSteps += steps;
+
+      // Check if scroll height grew
+      const { result: heightResult } = await cdpCall<{ result: { value: number } }>(
+        "Runtime.evaluate",
+        { expression: "document.documentElement.scrollHeight", returnByValue: true },
+      );
+      const currentHeight = heightResult.value;
+
+      if (currentHeight > previousHeight) {
+        previousHeight = currentHeight;
+        noChangeCount = 0;
+
+        // Wait for lazy content to load, then check again
+        await new Promise((r) => setTimeout(r, 500));
+        const { result: afterResult } = await cdpCall<{ result: { value: number } }>(
+          "Runtime.evaluate",
+          { expression: "document.documentElement.scrollHeight", returnByValue: true },
+        );
+        if (afterResult.value > previousHeight) {
+          previousHeight = afterResult.value;
+        }
+      } else {
+        noChangeCount++;
+      }
+    }
+
+    send({
+      type: "scrollRevealLazyContentResponse",
+      requestId,
+      success: true,
+      totalScrollSteps,
+      finalHeight: previousHeight,
+    });
+    log(`Scroll-reveal done locally: ${totalScrollSteps} steps, height=${previousHeight}px`);
+  });
+}
+
 async function handleCdpVersionRequest(): Promise<void> {
   if (!currentChromeSession) {
     log("CDP version request but no Chrome session");
@@ -821,6 +930,14 @@ function handleMessage(rawData: WebSocket.RawData): void {
         const error = err instanceof Error ? err.message : String(err);
         log(`ERROR: clickElement failed: ${error}`);
         send({ type: "clickElementResponse", requestId: msg.requestId, success: false, error });
+      });
+      break;
+
+    case "scrollRevealLazyContent":
+      handleScrollRevealLazyContent(msg.requestId, msg.viewport, msg.maxRounds, msg.noChangeLimit).catch((err) => {
+        const error = err instanceof Error ? err.message : String(err);
+        log(`ERROR: scrollRevealLazyContent failed: ${error}`);
+        send({ type: "scrollRevealLazyContentResponse", requestId: msg.requestId, success: false, totalScrollSteps: 0, finalHeight: 0, error });
       });
       break;
 
