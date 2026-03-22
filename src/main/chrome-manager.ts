@@ -111,6 +111,7 @@ function fetchCdpVersion(port: number, maxRetries = 20, retryDelay = 500): Promi
 
       req.on("error", () => {
         if (attempts < maxRetries) {
+          if (attempts % 5 === 0) console.log(`[Chrome] Waiting for CDP... (attempt ${attempts}/${maxRetries})`);
           setTimeout(attempt, retryDelay);
         } else {
           reject(new Error(`Chrome did not start within ${maxRetries * retryDelay}ms`));
@@ -120,6 +121,7 @@ function fetchCdpVersion(port: number, maxRetries = 20, retryDelay = 500): Promi
       req.setTimeout(2000, () => {
         req.destroy();
         if (attempts < maxRetries) {
+          if (attempts % 5 === 0) console.log(`[Chrome] CDP timeout, retrying... (attempt ${attempts}/${maxRetries})`);
           setTimeout(attempt, retryDelay);
         } else {
           reject(new Error(`Chrome /json/version timeout after ${maxRetries} attempts`));
@@ -174,7 +176,7 @@ export async function launchChrome(options: {
     prefs.session = { restore_on_startup: 1 };
     fs.writeFileSync(prefsPath, JSON.stringify(prefs));
   } catch (err) {
-    console.warn(`[Chrome] Failed to write preferences: ${err}`);
+    console.error(`[Chrome] Failed to write preferences: ${err instanceof Error ? err.stack || err.message : String(err)}`);
   }
 
   // Remove stale lock files left by previous Chrome crashes/kills —

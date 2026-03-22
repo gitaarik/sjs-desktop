@@ -79,7 +79,9 @@ async function cdpBrowserCall(
           if (msg.result?.windowId !== undefined) params.windowId = msg.result.windowId;
           cdpWs.send(JSON.stringify({ id: step + 1, method: messages[step].method, params }));
         }
-      } catch { /* ignore parse errors */ }
+      } catch (err) {
+          log(`cdpBrowserCall: JSON parse error: ${err instanceof Error ? err.message : String(err)}`);
+        }
     });
 
     cdpWs.on("error", (err) => { clearTimeout(timeout); reject(err); });
@@ -130,8 +132,8 @@ function reMinimize(cdpWsUrl: string): void {
       if (state === "minimized") return;
       await setChromeWindowState(cdpWsUrl, "minimized");
       log("Chrome re-minimized after new tab (focus was stolen)");
-    } catch {
-      // Best-effort
+    } catch (err) {
+      log(`Re-minimize failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   }, 300);
 }
@@ -504,7 +506,9 @@ async function handleScreenshotRequest(requestId: string, format: string, qualit
           browserWs.close();
           resolve();
         }
-      } catch { /* ignore */ }
+      } catch (err) {
+          log(`Screenshot CDP parse error: ${err instanceof Error ? err.message : String(err)}`);
+        }
     });
 
     browserWs.on("error", () => {
@@ -659,7 +663,9 @@ async function handleClickElement(
               if (msg.error) reject(new Error(`${method}: ${msg.error.message}`));
               else resolve((msg.result || {}) as T);
             }
-          } catch { /* not our message */ }
+          } catch (err) {
+            log(`clickElement cdpCall parse error: ${err instanceof Error ? err.message : String(err)}`);
+          }
         };
 
         pageWs.on("message", onMsg);
@@ -785,7 +791,9 @@ async function handleScrollRevealLazyContent(
               if (msg.error) reject(new Error(`${method}: ${msg.error.message}`));
               else resolve((msg.result || {}) as T);
             }
-          } catch { /* not our message */ }
+          } catch (err) {
+            log(`scrollReveal cdpCall parse error: ${err instanceof Error ? err.message : String(err)}`);
+          }
         };
 
         pageWs.on("message", onMsg);
@@ -894,8 +902,8 @@ function handleMessage(rawData: WebSocket.RawData): void {
   let msg: ServerMessage;
   try {
     msg = JSON.parse(rawData.toString());
-  } catch {
-    log("Invalid message from server");
+  } catch (err) {
+    log(`Invalid message from server: ${err instanceof Error ? err.message : String(err)}`);
     return;
   }
 

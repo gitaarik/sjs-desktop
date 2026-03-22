@@ -105,7 +105,7 @@ export function createCdpBridge(options: CdpBridgeOptions): Promise<CdpBridge> {
                 };
                 cdpData = JSON.stringify(cdp);
               }
-            } catch { /* not JSON or no method — just relay */ }
+            } catch { /* not JSON or no method — relay as-is */ }
 
             chromeWs.send(cdpData);
             serverToChrome++;
@@ -117,8 +117,8 @@ export function createCdpBridge(options: CdpBridgeOptions): Promise<CdpBridge> {
             serverToChromeBytes += buf.length;
           }
           // Other message types handled by tunnel-client
-        } catch {
-          // Not a valid message, ignore
+        } catch (err) {
+          console.log(`[CDP Bridge] Tunnel message parse error: ${err instanceof Error ? err.message : String(err)}`);
         }
       };
       tunnelWs.on("message", tunnelHandler);
