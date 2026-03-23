@@ -644,6 +644,26 @@ async function handleClickElement(
   timeout: number,
   modifiers?: string[],
 ): Promise<void> {
+  // Snapshot page targets before click to detect new tabs
+  const cdpWsUrl = currentChromeSession!.cdpWsUrl;
+  const portMatch = cdpWsUrl.match(/:(\d+)\//);
+  const cdpPort = portMatch?.[1];
+  let targetsBefore: string[] = [];
+  if (cdpPort) {
+    try {
+      const targets: { id: string; type: string }[] = await new Promise((resolve, reject) => {
+        const req = http.get(`http://127.0.0.1:${cdpPort}/json`, (res) => {
+          let data = "";
+          res.on("data", (chunk: string) => (data += chunk));
+          res.on("end", () => { try { resolve(JSON.parse(data)); } catch { resolve([]); } });
+        });
+        req.on("error", () => resolve([]));
+        req.setTimeout(1000, () => { req.destroy(); resolve([]); });
+      });
+      targetsBefore = targets.filter(t => t.type === "page").map(t => t.id);
+    } catch { /* ignore */ }
+  }
+
   await withDirectPageCdp("clickElement", timeout + 5000, async (pageWs, nextId) => {
     // Helper to send a CDP command and await its response
     const cdpCall = <T = Record<string, unknown>>(method: string, params: Record<string, unknown> = {}): Promise<T> => {
@@ -757,8 +777,28 @@ async function handleClickElement(
     }
   });
 
-  send({ type: "clickElementResponse", requestId, success: true });
-  log(`Clicked element locally: ${selector}${modifiers?.length ? ` [${modifiers.join("+")}]` : ""}`);
+  // Check if a new tab appeared after the click
+  let newTabOpened = false;
+  if (cdpPort && targetsBefore.length > 0) {
+    // Brief wait for the browser to create the tab target
+    await new Promise((r) => setTimeout(r, 300));
+    try {
+      const targets: { id: string; type: string }[] = await new Promise((resolve, reject) => {
+        const req = http.get(`http://127.0.0.1:${cdpPort}/json`, (res) => {
+          let data = "";
+          res.on("data", (chunk: string) => (data += chunk));
+          res.on("end", () => { try { resolve(JSON.parse(data)); } catch { resolve([]); } });
+        });
+        req.on("error", () => resolve([]));
+        req.setTimeout(1000, () => { req.destroy(); resolve([]); });
+      });
+      const pagesAfter = targets.filter(t => t.type === "page").map(t => t.id);
+      newTabOpened = pagesAfter.some(id => !targetsBefore.includes(id));
+    } catch { /* ignore */ }
+  }
+
+  send({ type: "clickElementResponse", requestId, success: true, newTabOpened });
+  log(`Clicked element locally: ${selector}${modifiers?.length ? ` [${modifiers.join("+")}]` : ""}${newTabOpened ? " (new tab opened)" : ""}`);
 }
 
 /**

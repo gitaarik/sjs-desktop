@@ -155,6 +155,8 @@ export interface TunnelClickElementResponse {
   type: "clickElementResponse";
   requestId: string;
   success: boolean;
+  /** Whether the click caused a new browser tab to open (detected locally) */
+  newTabOpened?: boolean;
   error?: string;
 }
 
