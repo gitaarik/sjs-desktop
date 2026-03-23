@@ -4,6 +4,12 @@ All notable changes to the Smart Job Seeker desktop app will be documented in th
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Improved
+
+- **Logging across tunnel client, CDP bridge, and Chrome manager** -- replaced silent catch blocks with error logging for CDP parse errors, screenshot failures, click/scroll handler errors, and invalid server messages; added CDP retry progress logging and better preferences write error reporting
+
 ## [0.3.1] - 2026-03-22
 
 ### Added
