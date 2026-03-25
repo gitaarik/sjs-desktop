@@ -145,7 +145,10 @@ jobs:
             See [BUILD.md](https://github.com/gitaarik/sjs-desktop/blob/main/BUILD.md) for instructions.
           releaseDraft: false
           prerelease: ${{ needs.check-version.outputs.is_prerelease == 'true' }}
-          args: ${{ matrix.rust_target && format('--target {0}', matrix.rust_target) || '' }}
+          # MSI doesn't support semver pre-release identifiers (e.g. -beta.1), so skip it for prereleases
+          args: >-
+            ${{ matrix.rust_target && format('--target {0}', matrix.rust_target) || '' }}
+            ${{ needs.check-version.outputs.is_prerelease == 'true' && matrix.platform == 'windows-latest' && '--bundles nsis' || '' }}
 
   # For beta releases: copy latest.json to the pinned beta-latest release
   # so the beta update channel always has a stable endpoint
