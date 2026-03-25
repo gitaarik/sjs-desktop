@@ -13,6 +13,8 @@ jobs:
   check-version:
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
+    outputs:
+      is_prerelease: ${{ steps.prerelease.outputs.is_prerelease }}
     steps:
       - uses: actions/checkout@v4
       - name: Check tag matches tauri.conf.json version
@@ -25,6 +27,15 @@ jobs:
             exit 1
           fi
           echo "Tag v$TAG matches tauri.conf.json version $VERSION"
+      - name: Detect prerelease
+        id: prerelease
+        run: |
+          TAG="${GITHUB_REF#refs/tags/v}"
+          if [[ "$TAG" == *-beta* ]] || [[ "$TAG" == *-alpha* ]] || [[ "$TAG" == *-rc* ]]; then
+            echo "is_prerelease=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "is_prerelease=false" >> "$GITHUB_OUTPUT"
+          fi
 
   build:
     needs: check-version
@@ -133,5 +144,37 @@ jobs:
 
             See [BUILD.md](https://github.com/gitaarik/sjs-desktop/blob/main/BUILD.md) for instructions.
           releaseDraft: false
-          prerelease: false
+          prerelease: ${{ needs.check-version.outputs.is_prerelease == 'true' }}
           args: ${{ matrix.rust_target && format('--target {0}', matrix.rust_target) || '' }}
+
+  # For beta releases: copy latest.json to the pinned beta-latest release
+  # so the beta update channel always has a stable endpoint
+  update-beta-latest:
+    needs: [check-version, build]
+    if: needs.check-version.outputs.is_prerelease == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Wait for release assets to be uploaded
+        run: sleep 30
+
+      - name: Download latest.json from this release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          gh release download "$TAG" --pattern "latest.json" --dir ./artifacts --repo "$GITHUB_REPOSITORY"
+
+      - name: Upload latest.json to beta-latest release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Create beta-latest release if it doesn't exist
+          if ! gh release view beta-latest --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            gh release create beta-latest --repo "$GITHUB_REPOSITORY" \
+              --title "Beta Update Channel" \
+              --notes "This release is used by the beta auto-updater. Do not delete." \
+              --prerelease
+          fi
+          # Delete existing latest.json and upload the new one
+          gh release delete-asset beta-latest latest.json --repo "$GITHUB_REPOSITORY" --yes 2>/dev/null || true
+          gh release upload beta-latest ./artifacts/latest.json --repo "$GITHUB_REPOSITORY" --clobber

@@ -6,6 +6,7 @@ use tauri::{
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     AppHandle, Emitter, Manager, State,
 };
+use tauri_plugin_updater::UpdaterExt;
 
 /// App state shared between commands and the tray
 struct AppState {
@@ -138,6 +139,71 @@ fn update_tray_state(
     update_tray_tooltip(&app, &status);
 }
 
+/// Update info returned to the frontend
+#[derive(Debug, Serialize, Clone)]
+struct UpdateInfo {
+    version: String,
+    body: Option<String>,
+}
+
+/// Check for updates using the specified channel endpoint
+#[tauri::command]
+async fn check_for_update(app: AppHandle, channel: String) -> Result<Option<UpdateInfo>, String> {
+    let endpoint: url::Url = match channel.as_str() {
+        "beta" => "https://github.com/gitaarik/sjs-desktop/releases/download/beta-latest/latest.json",
+        _ => "https://github.com/gitaarik/sjs-desktop/releases/latest/download/latest.json",
+    }
+    .parse()
+    .map_err(|e| format!("{e}"))?;
+
+    let updater = app
+        .updater_builder()
+        .endpoints(vec![endpoint])
+        .map_err(|e| format!("{e}"))?
+        .build()
+        .map_err(|e| format!("{e}"))?;
+
+    match updater.check().await {
+        Ok(Some(update)) => Ok(Some(UpdateInfo {
+            version: update.version.clone(),
+            body: update.body.clone(),
+        })),
+        Ok(None) => Ok(None),
+        Err(e) => Err(format!("{e}")),
+    }
+}
+
+/// Download and install an update from the specified channel
+#[tauri::command]
+async fn download_and_install_update(app: AppHandle, channel: String) -> Result<(), String> {
+    let endpoint: url::Url = match channel.as_str() {
+        "beta" => "https://github.com/gitaarik/sjs-desktop/releases/download/beta-latest/latest.json",
+        _ => "https://github.com/gitaarik/sjs-desktop/releases/latest/download/latest.json",
+    }
+    .parse()
+    .map_err(|e| format!("{e}"))?;
+
+    let updater = app
+        .updater_builder()
+        .endpoints(vec![endpoint])
+        .map_err(|e| format!("{e}"))?
+        .build()
+        .map_err(|e| format!("{e}"))?;
+
+    let update = updater
+        .check()
+        .await
+        .map_err(|e| format!("{e}"))?
+        .ok_or_else(|| "No update available".to_string())?;
+
+    update
+        .download_and_install(|_, _| {}, || {})
+        .await
+        .map_err(|e| format!("{e}"))?;
+
+    Ok(())
+}
+
 /// Update the tray tooltip with current status
 fn update_tray_tooltip(app: &AppHandle, status: &str) {
     let tooltip = match status {
@@ -162,7 +228,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_status,
             is_sidecar_running,
-            update_tray_state
+            update_tray_state,
+            check_for_update,
+            download_and_install_update
         ])
         .setup(|app| {
             // Build tray menu

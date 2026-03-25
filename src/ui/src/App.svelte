@@ -24,6 +24,10 @@
   let updateAvailable: string | null = null;
   let updateBody: string | null = null;
   let updating = false;
+  let appVersion: string | null = null;
+  let checkingForUpdates = false;
+  let updateCheckResult: string | null = null;
+  let updateChannel: "stable" | "beta" = "stable";
 
   // Max log entries to keep
   const MAX_LOGS = 100;
@@ -148,38 +152,70 @@
     }
   });
 
-  // Check for app updates
+  // Get app version and load channel preference
   onMount(async () => {
     try {
-      const { check } = await import("@tauri-apps/plugin-updater");
-      const update = await check();
-      if (update) {
-        updateAvailable = update.version;
-        updateBody = update.body ?? null;
-        addLog(`Update available: v${update.version}`);
-      }
+      const { getVersion } = await import("@tauri-apps/api/app");
+      appVersion = await getVersion();
     } catch {
-      // Not running in Tauri or network error — ignore
+      // Not running in Tauri
     }
+    // Load saved channel preference
+    const saved = localStorage.getItem("sjs-update-channel");
+    if (saved === "beta") updateChannel = "beta";
+  });
+
+  // Check for app updates via custom Rust command
+  async function checkForUpdates() {
+    checkingForUpdates = true;
+    updateCheckResult = null;
+    updateAvailable = null;
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const result: { version: string; body: string | null } | null =
+        await invoke("check_for_update", { channel: updateChannel });
+      if (result) {
+        updateAvailable = result.version;
+        updateBody = result.body ?? null;
+        addLog(`Update available: v${result.version} (${updateChannel} channel)`);
+      } else {
+        updateCheckResult = "You're on the latest version";
+        addLog(`No updates available (${updateChannel} channel)`);
+      }
+    } catch (err) {
+      updateCheckResult = "Failed to check for updates";
+      addLog(`Update check failed: ${err}`);
+    } finally {
+      checkingForUpdates = false;
+    }
+  }
+
+  onMount(() => {
+    checkForUpdates();
   });
 
   async function handleUpdate() {
     if (updating) return;
     updating = true;
     try {
-      const { check } = await import("@tauri-apps/plugin-updater");
+      const { invoke } = await import("@tauri-apps/api/core");
       const { relaunch } = await import("@tauri-apps/plugin-process");
-      const update = await check();
-      if (update) {
-        addLog("Downloading update...");
-        await update.downloadAndInstall();
-        addLog("Update installed, restarting...");
-        await relaunch();
-      }
+      addLog("Downloading update...");
+      await invoke("download_and_install_update", { channel: updateChannel });
+      addLog("Update installed, restarting...");
+      await relaunch();
     } catch (err) {
       addLog(`Update failed: ${err}`);
       updating = false;
     }
+  }
+
+  function toggleChannel() {
+    updateChannel = updateChannel === "stable" ? "beta" : "stable";
+    localStorage.setItem("sjs-update-channel", updateChannel);
+    updateAvailable = null;
+    updateCheckResult = null;
+    checkForUpdates();
   }
 
   // Actions
@@ -278,7 +314,10 @@
 
 <main>
   <header>
-    <h1>Smart Job Seeker</h1>
+    <div class="header-left">
+      <h1>Smart Job Seeker</h1>
+      {#if appVersion}<span class="app-version">v{appVersion}{#if updateChannel === "beta"} (beta){/if}</span>{/if}
+    </div>
     <div class="status-badge" style="background: {statusColor}">
       {statusLabel}
     </div>
@@ -412,6 +451,24 @@
       </div>
     </section>
   {/if}
+
+  <!-- Footer -->
+  <footer>
+    <div class="footer-left">
+      {#if updateCheckResult}
+        <span class="update-check-result">{updateCheckResult}</span>
+      {/if}
+    </div>
+    <div class="footer-right">
+      <button class="btn-link" on:click={toggleChannel} disabled={checkingForUpdates || updating}>
+        {updateChannel === "stable" ? "Switch to beta" : "Switch to stable"}
+      </button>
+      <span class="footer-sep">|</span>
+      <button class="btn-link" on:click={checkForUpdates} disabled={checkingForUpdates || updating}>
+        {checkingForUpdates ? "Checking..." : "Check for updates"}
+      </button>
+    </div>
+  </footer>
 </main>
 
 <style>
@@ -427,10 +484,22 @@
     margin-bottom: 24px;
   }
 
+  .header-left {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+  }
+
   h1 {
     font-size: 18px;
     font-weight: 600;
     margin: 0;
+  }
+
+  .app-version {
+    font-size: 12px;
+    color: var(--text-muted);
+    font-weight: 400;
   }
 
   h2 {
@@ -674,5 +743,54 @@
   .btn-sm {
     padding: 4px 12px;
     font-size: 12px;
+  }
+
+  footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 0 0;
+    margin-top: 8px;
+    border-top: 1px solid var(--border);
+  }
+
+  .footer-left {
+    font-size: 12px;
+    color: var(--text-muted);
+  }
+
+  .footer-right {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .footer-sep {
+    color: var(--text-faint);
+    font-size: 12px;
+  }
+
+  .update-check-result {
+    font-size: 12px;
+    color: var(--text-muted);
+  }
+
+  .btn-link {
+    background: none;
+    color: var(--focus);
+    padding: 4px 0;
+    font-size: 12px;
+    font-weight: 400;
+    border: none;
+    cursor: pointer;
+  }
+
+  .btn-link:hover {
+    opacity: 0.8;
+  }
+
+  .btn-link:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
   }
 </style>

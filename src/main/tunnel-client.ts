@@ -13,7 +13,7 @@ import type { AppConfig } from "./config";
 import type { ClientMessage, ServerMessage } from "./protocol";
 
 // Keep in sync with package.json version
-const APP_VERSION = "0.3.0";
+const APP_VERSION = "0.4.0-beta.1";
 
 /**
  * Look up a page target ID from Chrome's HTTP /json endpoint.

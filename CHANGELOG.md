@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.4.0-beta.1] - 2026-03-25
+
+### Added
+
+- **App version display** -- version number shown in the header next to the app title
+- **Check for updates button** -- manual update check from the footer, with status feedback
+- **Beta update channel** -- users can switch between stable and beta channels to receive early updates; preference persisted in localStorage
+- **Channel-aware updater** -- custom Rust commands route update checks to the correct GitHub release endpoint per channel
+
+### Changed
+
+- **Release workflow** -- auto-detects prerelease tags (`-beta`, `-alpha`, `-rc`) and marks GitHub Releases as prereleases accordingly; new CI job maintains a pinned `beta-latest` release for the beta updater endpoint
+
 ### Improved
 
 - **Logging across tunnel client, CDP bridge, and Chrome manager** -- replaced silent catch blocks with error logging for CDP parse errors, screenshot failures, click/scroll handler errors, and invalid server messages; added CDP retry progress logging and better preferences write error reporting
