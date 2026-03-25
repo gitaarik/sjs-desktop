@@ -152,19 +152,6 @@
     }
   });
 
-  // Get app version and load channel preference
-  onMount(async () => {
-    try {
-      const { getVersion } = await import("@tauri-apps/api/app");
-      appVersion = await getVersion();
-    } catch {
-      // Not running in Tauri
-    }
-    // Load saved channel preference
-    const saved = localStorage.getItem("sjs-update-channel");
-    if (saved === "beta") updateChannel = "beta";
-  });
-
   // Check for app updates via custom Rust command
   async function checkForUpdates() {
     checkingForUpdates = true;
@@ -190,7 +177,21 @@
     }
   }
 
-  onMount(() => {
+  // Get app version, load channel preference, then check for updates
+  onMount(async () => {
+    try {
+      const { getVersion } = await import("@tauri-apps/api/app");
+      appVersion = await getVersion();
+    } catch {
+      // Not running in Tauri
+    }
+    // Load saved channel preference, defaulting to beta if running a prerelease build
+    const saved = localStorage.getItem("sjs-update-channel");
+    if (saved) {
+      updateChannel = saved === "beta" ? "beta" : "stable";
+    } else if (appVersion && /-(beta|alpha|rc)/.test(appVersion)) {
+      updateChannel = "beta";
+    }
     checkForUpdates();
   });
 

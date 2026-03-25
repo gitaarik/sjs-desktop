@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.4.0-beta.2] - 2026-03-25
+
+### Fixed
+
+- **Update channel default** -- beta builds now default to the beta update channel instead of stable; fixes the toggle button showing the wrong label on fresh installs
+
 ## [0.4.0-beta.1] - 2026-03-25
 
 ### Added
