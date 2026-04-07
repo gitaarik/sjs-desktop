@@ -9,12 +9,14 @@ import path from "path";
 import os from "os";
 
 export interface AppConfig {
-  /** Server preset (production, preview, dev, custom) */
+  /** Server preset (preview, dev, custom) */
   server: string;
   /** Server tunnel WebSocket URL (e.g., wss://smartjobseeker.com/tunnel) */
   serverUrl: string;
-  /** API token for authentication */
+  /** API token for the active server (kept for backward compat) */
   apiToken: string;
+  /** Per-server API tokens keyed by server id */
+  apiTokens: Record<string, string>;
   /** Optional custom Chrome path */
   chromePath?: string;
   /** Whether to auto-connect on startup */
@@ -29,6 +31,7 @@ const DEFAULT_CONFIG: AppConfig = {
   server: "preview",
   serverUrl: "",
   apiToken: "",
+  apiTokens: {},
   autoConnect: false,
   headed: true,
   autoReconnect: true,
@@ -53,7 +56,12 @@ export function loadConfig(): AppConfig {
   try {
     if (fs.existsSync(configPath)) {
       const data = fs.readFileSync(configPath, "utf-8");
-      return { ...DEFAULT_CONFIG, ...JSON.parse(data) };
+      const config = { ...DEFAULT_CONFIG, ...JSON.parse(data) };
+      // Migrate: old config had a single apiToken, copy it into apiTokens
+      if (config.apiToken && config.server && !config.apiTokens[config.server]) {
+        config.apiTokens[config.server] = config.apiToken;
+      }
+      return config;
     }
   } catch (err) {
     console.warn(`[Config] Failed to load config: ${err}`);

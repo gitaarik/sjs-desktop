@@ -41,6 +41,7 @@ interface ConfigureCommand {
   server?: string;
   serverUrl: string;
   apiToken: string;
+  apiTokens?: Record<string, string>;
   autoConnect?: boolean;
   headed?: boolean;
   autoReconnect?: boolean;
@@ -97,6 +98,9 @@ function handleConfigure(cmd: ConfigureCommand): void {
   }
   config.serverUrl = cmd.serverUrl;
   config.apiToken = cmd.apiToken;
+  if (cmd.apiTokens !== undefined) {
+    config.apiTokens = cmd.apiTokens;
+  }
   if (cmd.autoConnect !== undefined) {
     config.autoConnect = cmd.autoConnect;
   }
@@ -194,6 +198,7 @@ function handleGetConfig(): void {
     server: config.server || "",
     serverUrl: config.serverUrl,
     apiToken: config.apiToken || "",
+    apiTokens: config.apiTokens || {},
     autoConnect: config.autoConnect,
     headed: config.headed,
     autoReconnect: config.autoReconnect,

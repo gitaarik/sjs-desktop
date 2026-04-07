@@ -12,6 +12,8 @@
   let server = "";
   let serverUrl = "";
   let apiToken = "";
+  let apiTokens: Record<string, string> = {};
+  let showToken = false;
   let headed = true;
   let autoConnect = false;
   let autoReconnect = true;
@@ -73,6 +75,7 @@
         case "config":
           server = server || msg.server || "";
           serverUrl = serverUrl || msg.serverUrl || "";
+          apiTokens = msg.apiTokens ?? {};
           apiToken = apiToken || msg.apiToken || "";
           autoConnect = msg.autoConnect ?? false;
           headed = msg.headed ?? true;
@@ -90,6 +93,11 @@
           }
           // Default to preview if nothing is set
           if (!server) server = "preview";
+          // Ensure active token is in the map so server-switch reactive works
+          if (apiToken && server && !apiTokens[server]) {
+            apiTokens[server] = apiToken;
+          }
+          prevServer = server;
           configLoaded = true;
           if (!chromeVersion) activeTab = "chrome";
           break;
@@ -248,13 +256,29 @@
     }
   }
 
+  // Swap apiToken when server changes (per-server tokens)
+  let prevServer = "";
+  $: if (server && server !== prevServer) {
+    // Save current token for previous server
+    if (prevServer && apiToken) {
+      apiTokens[prevServer] = apiToken;
+    }
+    // Load token for new server
+    apiToken = apiTokens[server] || "";
+    tokenError = "";
+    prevServer = server;
+  }
+
   // Actions
   async function handleSaveConfig() {
+    // Keep apiTokens map in sync before saving
+    if (server) apiTokens[server] = apiToken;
     await sendCommand({
       type: "configure",
       server,
       serverUrl,
       apiToken,
+      apiTokens,
       autoConnect,
       headed,
       autoReconnect,
@@ -421,14 +445,24 @@
 
       <label>
         API Token
-        <input
-          type="password"
-          bind:value={apiToken}
-          placeholder="sjs_..."
-          disabled={isConnected || isConnecting || isReconnecting}
-          class:input-error={tokenError}
-          on:input={() => (tokenError = "")}
-        />
+        <div class="token-input-wrap">
+          <input
+            type={showToken ? "text" : "password"}
+            bind:value={apiToken}
+            placeholder="sjs_..."
+            disabled={isConnected || isConnecting || isReconnecting}
+            class:input-error={tokenError}
+            on:input={() => (tokenError = "")}
+          />
+          <button
+            type="button"
+            class="token-toggle"
+            on:click={() => (showToken = !showToken)}
+            tabindex="-1"
+          >
+            {showToken ? "Hide" : "Show"}
+          </button>
+        </div>
         {#if tokenError}<span class="field-error">{tokenError}</span>{/if}
       </label>
 
@@ -696,6 +730,33 @@
   .server-option:disabled {
     opacity: 0.5;
     cursor: not-allowed;
+  }
+
+  .token-input-wrap {
+    position: relative;
+    display: flex;
+    align-items: center;
+  }
+
+  .token-input-wrap input {
+    padding-right: 52px;
+  }
+
+  .token-toggle {
+    position: absolute;
+    right: 8px;
+    padding: 2px 8px;
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--text-muted);
+    background: none;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+  }
+
+  .token-toggle:hover {
+    color: var(--text-secondary);
   }
 
   .input-error {
