@@ -1,7 +1,7 @@
 {
   "name": "sjs-desktop",
   "productName": "Smart Job Seeker",
-  "version": "0.4.0-beta.2",
+  "version": "0.4.0-beta.3",
   "description": "Desktop app for Smart Job Seeker — runs Chrome locally for scraping with real residential IP",
   "main": "dist/main/index.js",
   "scripts": {
@@ -20,7 +20,8 @@
     "tauri:build": "cd src-tauri && cargo tauri build",
     "ui:dev": "cd src/ui && npm run dev",
     "ui:build": "cd src/ui && npm run build",
-    "ui:install": "cd src/ui && npm install"
+    "ui:install": "cd src/ui && npm install",
+    "release": "scripts/release.sh"
   },
   "dependencies": {
     "ws": "^8.18.0"

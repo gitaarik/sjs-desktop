@@ -58,6 +58,21 @@ npm run dev:sidecar
 npm run tauri:dev
 ```
 
+## Releasing
+
+Create a new release with:
+
+```bash
+npm run release              # bump pre-release: beta.3 → beta.4
+npm run release -- patch     # promote to stable: 0.4.0-beta.4 → 0.4.0
+npm run release -- minor     # minor bump: 0.4.0 → 0.5.0
+npm run release -- major     # major bump: 0.4.0 → 1.0.0
+```
+
+This bumps the version in `tauri.conf.json` and `package.json`, commits, tags, and pushes. The `v*` tag triggers a [GitHub Actions workflow](.github/workflows/release.yml) that builds installers for all platforms and creates a GitHub release.
+
+Add `--yes` to skip the confirmation prompt.
+
 ## Verifying the build
 
 The JavaScript sidecar bundle is deterministic (produced by esbuild). You can verify it matches a release:
