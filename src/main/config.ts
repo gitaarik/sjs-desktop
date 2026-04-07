@@ -28,7 +28,7 @@ export interface AppConfig {
 }
 
 const DEFAULT_CONFIG: AppConfig = {
-  server: "preview",
+  server: "dev",
   serverUrl: "",
   apiToken: "",
   apiTokens: {},
@@ -57,6 +57,14 @@ export function loadConfig(): AppConfig {
     if (fs.existsSync(configPath)) {
       const data = fs.readFileSync(configPath, "utf-8");
       const config = { ...DEFAULT_CONFIG, ...JSON.parse(data) };
+      // Migrate: old "preview" server id → "dev" (URL mapping was corrected)
+      if (config.server === "preview" && (!config.serverUrl || config.serverUrl.includes("dev.smartjobseeker.com"))) {
+        config.server = "dev";
+        if (config.apiTokens["preview"]) {
+          config.apiTokens["dev"] = config.apiTokens["preview"];
+          delete config.apiTokens["preview"];
+        }
+      }
       // Migrate: old config had a single apiToken, copy it into apiTokens
       if (config.apiToken && config.server && !config.apiTokens[config.server]) {
         config.apiTokens[config.server] = config.apiToken;
