@@ -446,14 +446,25 @@
       <label>
         API Token
         <div class="token-input-wrap">
-          <input
-            type={showToken ? "text" : "password"}
-            bind:value={apiToken}
-            placeholder="sjs_..."
-            disabled={isConnected || isConnecting || isReconnecting}
-            class:input-error={tokenError}
-            on:input={() => (tokenError = "")}
-          />
+          {#if showToken}
+            <input
+              type="text"
+              bind:value={apiToken}
+              placeholder="sjs_..."
+              disabled={isConnected || isConnecting || isReconnecting}
+              class:input-error={tokenError}
+              on:input={() => (tokenError = "")}
+            />
+          {:else}
+            <input
+              type="password"
+              bind:value={apiToken}
+              placeholder="sjs_..."
+              disabled={isConnected || isConnecting || isReconnecting}
+              class:input-error={tokenError}
+              on:input={() => (tokenError = "")}
+            />
+          {/if}
           <button
             type="button"
             class="token-toggle"
