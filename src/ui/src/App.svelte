@@ -3,10 +3,9 @@
 
   // Server options
   const SERVERS = [
-    { id: "production", label: "Production", url: "wss://smartjobseeker.com/tunnel" },
     { id: "preview", label: "Preview", url: "wss://dev.smartjobseeker.com/tunnel" },
     { id: "dev", label: "Dev", url: "wss://dev2.smartjobseeker.com/tunnel" },
-    { id: "custom", label: "Custom URL", url: "" },
+    { id: "custom", label: "Custom", url: "" },
   ] as const;
 
   // State
@@ -79,13 +78,18 @@
           headed = msg.headed ?? true;
           autoReconnect = msg.autoReconnect ?? true;
           chromeVersion = msg.chromeVersion;
-          // Migrate: if serverUrl is set but server is not, detect from known URLs
+          // Migrate: detect server preset from known URLs
           if (serverUrl && !server) {
             const match = SERVERS.find((s) => s.url === serverUrl);
             server = match ? match.id : "custom";
           }
-          // Default to production if nothing is set
-          if (!server) server = "production";
+          // Migrate: production was removed, treat as custom
+          if (server === "production") {
+            server = "custom";
+            if (!serverUrl) serverUrl = "wss://smartjobseeker.com/tunnel";
+          }
+          // Default to preview if nothing is set
+          if (!server) server = "preview";
           configLoaded = true;
           if (!chromeVersion) activeTab = "chrome";
           break;
@@ -384,18 +388,21 @@
         <div class="form-error-banner">{connectionError}</div>
       {/if}
 
-      <label>
-        Server
-        <select
-          bind:value={server}
-          disabled={isConnected || isConnecting || isReconnecting}
-          on:change={() => (urlError = "")}
-        >
+      <div class="field">
+        <span class="field-label">Server</span>
+        <div class="server-picker">
           {#each SERVERS as s}
-            <option value={s.id}>{s.label}</option>
+            <button
+              class="server-option"
+              class:active={server === s.id}
+              disabled={isConnected || isConnecting || isReconnecting}
+              on:click={() => { server = s.id; urlError = ""; }}
+            >
+              {s.label}
+            </button>
           {/each}
-        </select>
-      </label>
+        </div>
+      </div>
 
       {#if server === "custom"}
         <label>
@@ -616,7 +623,6 @@
     cursor: pointer;
   }
 
-  select,
   input[type="text"],
   input[type="password"] {
     display: block;
@@ -631,7 +637,6 @@
     box-sizing: border-box;
   }
 
-  select:focus,
   input[type="text"]:focus,
   input[type="password"]:focus {
     outline: none;
@@ -640,6 +645,57 @@
 
   input:disabled {
     opacity: 0.5;
+  }
+
+  .field {
+    margin-bottom: 12px;
+  }
+
+  .field-label {
+    display: block;
+    font-size: 13px;
+    color: var(--text-secondary);
+    margin-bottom: 4px;
+  }
+
+  .server-picker {
+    display: flex;
+    background: var(--bg-base);
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    overflow: hidden;
+  }
+
+  .server-option {
+    flex: 1;
+    padding: 7px 12px;
+    border: none;
+    border-radius: 0;
+    background: transparent;
+    color: var(--text-muted);
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+  }
+
+  .server-option:not(:first-child) {
+    border-left: 1px solid var(--border);
+  }
+
+  .server-option:hover:not(:disabled):not(.active) {
+    color: var(--text-secondary);
+    background: var(--bg-surface);
+  }
+
+  .server-option.active {
+    background: var(--bg-elevated);
+    color: var(--text-primary);
+  }
+
+  .server-option:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
   }
 
   .input-error {

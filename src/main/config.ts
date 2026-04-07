@@ -26,7 +26,7 @@ export interface AppConfig {
 }
 
 const DEFAULT_CONFIG: AppConfig = {
-  server: "production",
+  server: "preview",
   serverUrl: "",
   apiToken: "",
   autoConnect: false,
