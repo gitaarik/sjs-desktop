@@ -3,8 +3,8 @@
 
   // Server options
   const SERVERS = [
-    { id: "dev", label: "Dev", url: "wss://dev.smartjobseeker.com/tunnel" },
     { id: "preview", label: "Preview", url: "wss://preview.smartjobseeker.com/tunnel" },
+    { id: "dev", label: "Dev", url: "wss://dev.smartjobseeker.com/tunnel" },
     { id: "custom", label: "Custom", url: "" },
   ] as const;
 
