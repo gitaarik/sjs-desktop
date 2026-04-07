@@ -9,6 +9,8 @@ import path from "path";
 import os from "os";
 
 export interface AppConfig {
+  /** Server preset (production, preview, dev, custom) */
+  server: string;
   /** Server tunnel WebSocket URL (e.g., wss://smartjobseeker.com/tunnel) */
   serverUrl: string;
   /** API token for authentication */
@@ -24,6 +26,7 @@ export interface AppConfig {
 }
 
 const DEFAULT_CONFIG: AppConfig = {
+  server: "production",
   serverUrl: "",
   apiToken: "",
   autoConnect: false,

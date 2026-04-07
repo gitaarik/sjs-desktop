@@ -38,6 +38,7 @@ function emitError(message: string): void {
 
 interface ConfigureCommand {
   type: "configure";
+  server?: string;
   serverUrl: string;
   apiToken: string;
   autoConnect?: boolean;
@@ -91,6 +92,9 @@ let config: AppConfig;
 let debugChrome: ChromeSession | null = null;
 
 function handleConfigure(cmd: ConfigureCommand): void {
+  if (cmd.server !== undefined) {
+    config.server = cmd.server;
+  }
   config.serverUrl = cmd.serverUrl;
   config.apiToken = cmd.apiToken;
   if (cmd.autoConnect !== undefined) {
@@ -103,7 +107,7 @@ function handleConfigure(cmd: ConfigureCommand): void {
     config.autoReconnect = cmd.autoReconnect;
   }
   saveConfig(config);
-  emitLog(`Configuration saved (autoConnect=${config.autoConnect}, headed=${config.headed}, autoReconnect=${config.autoReconnect}, serverUrl=${config.serverUrl ? "set" : "empty"}, apiToken=${config.apiToken ? "set" : "empty"})`);
+  emitLog(`Configuration saved (autoConnect=${config.autoConnect}, headed=${config.headed}, autoReconnect=${config.autoReconnect}, server=${config.server}, serverUrl=${config.serverUrl ? "set" : "empty"}, apiToken=${config.apiToken ? "set" : "empty"})`);
   emit({ type: "configured", config: { serverUrl: config.serverUrl, headed: config.headed } });
 }
 
@@ -187,6 +191,7 @@ function handleGetStatus(): void {
 function handleGetConfig(): void {
   emit({
     type: "config",
+    server: config.server || "",
     serverUrl: config.serverUrl,
     apiToken: config.apiToken || "",
     autoConnect: config.autoConnect,

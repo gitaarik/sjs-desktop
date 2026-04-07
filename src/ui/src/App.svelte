@@ -1,7 +1,16 @@
 <script lang="ts">
   import { onMount, onDestroy, tick } from "svelte";
 
+  // Server options
+  const SERVERS = [
+    { id: "production", label: "Production", url: "wss://smartjobseeker.com/tunnel" },
+    { id: "preview", label: "Preview", url: "wss://dev.smartjobseeker.com/tunnel" },
+    { id: "dev", label: "Dev", url: "wss://dev2.smartjobseeker.com/tunnel" },
+    { id: "custom", label: "Custom URL", url: "" },
+  ] as const;
+
   // State
+  let server = "";
   let serverUrl = "";
   let apiToken = "";
   let headed = true;
@@ -63,12 +72,20 @@
           if (userInitiatedConnect) connectionError = msg.message;
           break;
         case "config":
+          server = server || msg.server || "";
           serverUrl = serverUrl || msg.serverUrl || "";
           apiToken = apiToken || msg.apiToken || "";
           autoConnect = msg.autoConnect ?? false;
           headed = msg.headed ?? true;
           autoReconnect = msg.autoReconnect ?? true;
           chromeVersion = msg.chromeVersion;
+          // Migrate: if serverUrl is set but server is not, detect from known URLs
+          if (serverUrl && !server) {
+            const match = SERVERS.find((s) => s.url === serverUrl);
+            server = match ? match.id : "custom";
+          }
+          // Default to production if nothing is set
+          if (!server) server = "production";
           configLoaded = true;
           if (!chromeVersion) activeTab = "chrome";
           break;
@@ -219,10 +236,19 @@
     checkForUpdates();
   }
 
+  // Derive serverUrl from server selection
+  $: {
+    const entry = SERVERS.find((s) => s.id === server);
+    if (entry && entry.id !== "custom") {
+      serverUrl = entry.url;
+    }
+  }
+
   // Actions
   async function handleSaveConfig() {
     await sendCommand({
       type: "configure",
+      server,
       serverUrl,
       apiToken,
       autoConnect,
@@ -235,16 +261,18 @@
     urlError = "";
     tokenError = "";
     connectionError = "";
-    if (!serverUrl.trim()) {
-      urlError = "Server URL is required";
-    } else {
-      try {
-        const u = new URL(serverUrl);
-        if (u.protocol !== "wss:" && u.protocol !== "ws:") {
-          urlError = "Must be a WebSocket URL (wss://...)";
+    if (server === "custom") {
+      if (!serverUrl.trim()) {
+        urlError = "Server URL is required";
+      } else {
+        try {
+          const u = new URL(serverUrl);
+          if (u.protocol !== "wss:" && u.protocol !== "ws:") {
+            urlError = "Must be a WebSocket URL (wss://...)";
+          }
+        } catch {
+          urlError = "Invalid URL format";
         }
-      } catch {
-        urlError = "Invalid URL format";
       }
     }
     if (!apiToken.trim()) {
@@ -357,17 +385,32 @@
       {/if}
 
       <label>
-        Server URL
-        <input
-          type="text"
-          bind:value={serverUrl}
-          placeholder="wss://smartjobseeker.com/tunnel"
+        Server
+        <select
+          bind:value={server}
           disabled={isConnected || isConnecting || isReconnecting}
-          class:input-error={urlError}
-          on:input={() => (urlError = "")}
-        />
-        {#if urlError}<span class="field-error">{urlError}</span>{/if}
+          on:change={() => (urlError = "")}
+        >
+          {#each SERVERS as s}
+            <option value={s.id}>{s.label}</option>
+          {/each}
+        </select>
       </label>
+
+      {#if server === "custom"}
+        <label>
+          Server URL
+          <input
+            type="text"
+            bind:value={serverUrl}
+            placeholder="wss://example.com/tunnel"
+            disabled={isConnected || isConnecting || isReconnecting}
+            class:input-error={urlError}
+            on:input={() => (urlError = "")}
+          />
+          {#if urlError}<span class="field-error">{urlError}</span>{/if}
+        </label>
+      {/if}
 
       <label>
         API Token
@@ -573,6 +616,7 @@
     cursor: pointer;
   }
 
+  select,
   input[type="text"],
   input[type="password"] {
     display: block;
@@ -587,6 +631,7 @@
     box-sizing: border-box;
   }
 
+  select:focus,
   input[type="text"]:focus,
   input[type="password"]:focus {
     outline: none;
