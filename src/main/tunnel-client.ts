@@ -1024,6 +1024,17 @@ function handleMessage(rawData: WebSocket.RawData): void {
       });
       break;
 
+    case "setMinimized":
+      sessionKeepMinimized = msg.minimized;
+      if (currentChromeSession) {
+        setChromeWindowState(currentChromeSession.cdpWsUrl, msg.minimized ? "minimized" : "normal").then(() => {
+          log(`Chrome window ${msg.minimized ? "minimized" : "restored"}`);
+        }).catch((err) => {
+          log(`ERROR: setMinimized failed: ${err instanceof Error ? err.message : String(err)}`);
+        });
+      }
+      break;
+
     case "ping":
       send({ type: "pong" });
       break;

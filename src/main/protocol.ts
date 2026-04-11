@@ -125,6 +125,11 @@ export interface TunnelScrollRevealLazyContent {
   noChangeLimit: number;
 }
 
+export interface TunnelSetMinimized {
+  type: "setMinimized";
+  minimized: boolean;
+}
+
 export interface TunnelPing {
   type: "ping";
 }
@@ -191,6 +196,7 @@ export type ServerMessage =
   | TunnelScreenshotRequest
   | TunnelClickElement
   | TunnelScrollRevealLazyContent
+  | TunnelSetMinimized
   | TunnelCdpMessage
   | TunnelCdpBinary
   | TunnelPing;
