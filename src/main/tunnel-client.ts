@@ -802,6 +802,115 @@ async function handleClickElement(
 }
 
 /**
+ * Raw input forwarding (interactive browser control)
+ */
+
+// Cached CDP WebSocket for raw input — avoid opening a new connection per event
+let rawInputCdpWs: WebSocket | null = null;
+let rawInputMsgId = 1;
+let rawInputIdleTimer: ReturnType<typeof setTimeout> | null = null;
+const RAW_INPUT_IDLE_MS = 30_000; // Close after 30s of inactivity
+
+function resetRawInputIdleTimer() {
+  if (rawInputIdleTimer) clearTimeout(rawInputIdleTimer);
+  rawInputIdleTimer = setTimeout(() => {
+    if (rawInputCdpWs && rawInputCdpWs.readyState === WebSocket.OPEN) {
+      rawInputCdpWs.close();
+    }
+    rawInputCdpWs = null;
+    rawInputMsgId = 1;
+  }, RAW_INPUT_IDLE_MS);
+}
+
+async function getRawInputCdpWs(): Promise<WebSocket> {
+  if (rawInputCdpWs && rawInputCdpWs.readyState === WebSocket.OPEN) {
+    resetRawInputIdleTimer();
+    return rawInputCdpWs;
+  }
+
+  if (!currentChromeSession) throw new Error("No Chrome session");
+
+  const cdpWsUrl = currentChromeSession.cdpWsUrl;
+  const { port, pageId } = await findPageTarget(cdpWsUrl);
+
+  const targets: { id: string; type: string; webSocketDebuggerUrl?: string }[] = await new Promise((resolve, reject) => {
+    const req = http.get(`http://127.0.0.1:${port}/json`, (res) => {
+      let data = "";
+      res.on("data", (chunk: string) => (data += chunk));
+      res.on("end", () => {
+        try { resolve(JSON.parse(data)); }
+        catch { reject(new Error("Invalid JSON from /json")); }
+      });
+    });
+    req.on("error", reject);
+    req.setTimeout(3000, () => { req.destroy(); reject(new Error("Timeout")); });
+  });
+
+  const pageTarget = targets.find((t) => t.id === pageId && t.webSocketDebuggerUrl);
+  if (!pageTarget?.webSocketDebuggerUrl) {
+    throw new Error("No page WebSocket URL found");
+  }
+
+  return new Promise((resolve, reject) => {
+    const ws = new WebSocket(pageTarget.webSocketDebuggerUrl!);
+    const timeout = setTimeout(() => { ws.close(); reject(new Error("CDP connect timeout")); }, 5_000);
+    ws.on("open", () => {
+      clearTimeout(timeout);
+      rawInputCdpWs = ws;
+      rawInputMsgId = 1;
+      resetRawInputIdleTimer();
+      resolve(ws);
+    });
+    ws.on("error", (err) => { clearTimeout(timeout); reject(err); });
+    ws.on("close", () => {
+      if (rawInputCdpWs === ws) rawInputCdpWs = null;
+    });
+  });
+}
+
+function sendCdpInput(method: string, params: Record<string, unknown>) {
+  getRawInputCdpWs().then((ws) => {
+    ws.send(JSON.stringify({ id: rawInputMsgId++, method, params }));
+  }).catch((err) => {
+    log(`ERROR: sendCdpInput(${method}) failed: ${err instanceof Error ? err.message : String(err)}`);
+  });
+}
+
+const CDP_BUTTON_MAP: Record<string, string> = { left: "left", right: "right", middle: "middle" };
+
+async function handleRawMouseEvent(msg: {
+  x: number; y: number;
+  eventType: "mousePressed" | "mouseReleased" | "mouseMoved";
+  button?: "left" | "right" | "middle";
+  clickCount?: number;
+  modifiers?: number;
+}): Promise<void> {
+  const params: Record<string, unknown> = { type: msg.eventType, x: msg.x, y: msg.y };
+  if (msg.button) params.button = CDP_BUTTON_MAP[msg.button] || "left";
+  if (msg.clickCount) params.clickCount = msg.clickCount;
+  if (msg.modifiers) params.modifiers = msg.modifiers;
+  sendCdpInput("Input.dispatchMouseEvent", params);
+}
+
+async function handleRawScrollEvent(msg: {
+  x: number; y: number; deltaX: number; deltaY: number;
+}): Promise<void> {
+  sendCdpInput("Input.dispatchMouseEvent", {
+    type: "mouseWheel", x: msg.x, y: msg.y, deltaX: msg.deltaX, deltaY: msg.deltaY,
+  });
+}
+
+async function handleRawKeyEvent(msg: {
+  eventType: "keyDown" | "keyUp"; key: string; code: string;
+  text?: string; modifiers?: number;
+}): Promise<void> {
+  const params: Record<string, unknown> = { type: msg.eventType, key: msg.key, code: msg.code };
+  if (msg.text) params.text = msg.text;
+  if (msg.modifiers) params.modifiers = msg.modifiers;
+  sendCdpInput("Input.dispatchKeyEvent", params);
+}
+
+/**
  * Scroll through the page to reveal lazy-loaded content, entirely locally.
  * Uses real mouse wheel CDP events + Runtime.evaluate for height checks.
  * Returns when content stops growing or max rounds reached.
@@ -1033,6 +1142,24 @@ function handleMessage(rawData: WebSocket.RawData): void {
           log(`ERROR: setMinimized failed: ${err instanceof Error ? err.message : String(err)}`);
         });
       }
+      break;
+
+    case "rawMouseEvent":
+      handleRawMouseEvent(msg).catch((err) => {
+        log(`ERROR: rawMouseEvent failed: ${err instanceof Error ? err.message : String(err)}`);
+      });
+      break;
+
+    case "rawScrollEvent":
+      handleRawScrollEvent(msg).catch((err) => {
+        log(`ERROR: rawScrollEvent failed: ${err instanceof Error ? err.message : String(err)}`);
+      });
+      break;
+
+    case "rawKeyEvent":
+      handleRawKeyEvent(msg).catch((err) => {
+        log(`ERROR: rawKeyEvent failed: ${err instanceof Error ? err.message : String(err)}`);
+      });
       break;
 
     case "ping":

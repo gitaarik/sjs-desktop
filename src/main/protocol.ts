@@ -180,6 +180,40 @@ export interface TunnelCdpBinary {
 }
 
 // ============================================================================
+// Interactive browser control — raw CDP input events
+// ============================================================================
+
+/** Server → Client: raw mouse event dispatched via CDP Input.dispatchMouseEvent */
+export interface TunnelRawMouseEvent {
+  type: "rawMouseEvent";
+  x: number;
+  y: number;
+  eventType: "mousePressed" | "mouseReleased" | "mouseMoved";
+  button?: "left" | "right" | "middle";
+  clickCount?: number;
+  modifiers?: number;
+}
+
+/** Server → Client: raw scroll event dispatched via CDP Input.dispatchMouseEvent */
+export interface TunnelRawScrollEvent {
+  type: "rawScrollEvent";
+  x: number;
+  y: number;
+  deltaX: number;
+  deltaY: number;
+}
+
+/** Server → Client: raw key event dispatched via CDP Input.dispatchKeyEvent */
+export interface TunnelRawKeyEvent {
+  type: "rawKeyEvent";
+  eventType: "keyDown" | "keyUp";
+  key: string;
+  code: string;
+  text?: string;
+  modifiers?: number;
+}
+
+// ============================================================================
 // Union types
 // ============================================================================
 
@@ -199,6 +233,9 @@ export type ServerMessage =
   | TunnelSetMinimized
   | TunnelCdpMessage
   | TunnelCdpBinary
+  | TunnelRawMouseEvent
+  | TunnelRawScrollEvent
+  | TunnelRawKeyEvent
   | TunnelPing;
 
 export type ClientMessage =
