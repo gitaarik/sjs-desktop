@@ -102,6 +102,20 @@ jobs:
         if: needs.check-version.outputs.is_prerelease == 'true'
         run: node scripts/patch-beta-identity.js
 
+      # Generate macOS .icns for beta icons (iconutil is macOS-only)
+      - name: Generate beta .icns
+        if: needs.check-version.outputs.is_prerelease == 'true' && startsWith(matrix.platform, 'macos')
+        run: |
+          ICONSET_DIR=$(mktemp -d)/icon.iconset
+          mkdir -p "$ICONSET_DIR"
+          cp src-tauri/icons-beta/32x32.png "$ICONSET_DIR/icon_32x32.png"
+          cp src-tauri/icons-beta/64x64.png "$ICONSET_DIR/icon_32x32@2x.png"
+          cp src-tauri/icons-beta/128x128.png "$ICONSET_DIR/icon_128x128.png"
+          cp src-tauri/icons-beta/128x128@2x.png "$ICONSET_DIR/icon_128x128@2x.png"
+          cp src-tauri/icons-beta/icon.png "$ICONSET_DIR/icon_256x256.png"
+          cp src-tauri/icons-beta/icon.png "$ICONSET_DIR/icon_256x256@2x.png"
+          iconutil -c icns "$ICONSET_DIR" -o src-tauri/icons/icon.icns
+
       # Build UI
       - name: Build UI
         working-directory: src/ui
