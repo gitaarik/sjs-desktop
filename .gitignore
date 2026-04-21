@@ -13,3 +13,6 @@ src/ui/node_modules/
 # Sidecar binaries (build artifacts)
 sidecar/
 src-tauri/binaries/sjs-sidecar-*
+
+# Beta build temp (created by patch-beta-identity.js)
+src-tauri/icons-stable-backup/
