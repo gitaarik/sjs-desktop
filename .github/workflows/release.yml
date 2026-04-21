@@ -97,6 +97,11 @@ jobs:
           npx esbuild src/main/sidecar.ts --bundle --platform=node --outfile=dist/sidecar-bundle.cjs --format=cjs
           npx @yao-pkg/pkg dist/sidecar-bundle.cjs --target ${{ matrix.sidecar_pkg_target }} --output src-tauri/binaries/sjs-sidecar-${{ matrix.sidecar_triple }}${{ matrix.platform == 'windows-latest' && '.exe' || '' }}
 
+      # Patch app identity for beta (different identifier = side-by-side install)
+      - name: Patch beta identity
+        if: needs.check-version.outputs.is_prerelease == 'true'
+        run: node scripts/patch-beta-identity.js
+
       # Build UI
       - name: Build UI
         working-directory: src/ui
