@@ -156,8 +156,12 @@ let currentChromeSession: Awaited<ReturnType<typeof launchChrome>> | null = null
 let currentCdpBridge: { close: () => void } | null = null;
 let events: TunnelClientEvents = {};
 let intentionalDisconnect = false;
+let lastPingReceived = 0;
+let pingWatchdog: NodeJS.Timeout | null = null;
 
 const MAX_RECONNECT_DELAY_MS = 30_000;
+const PING_WATCHDOG_INTERVAL_MS = 15_000;
+const PING_WATCHDOG_TIMEOUT_MS = 75_000;
 
 function log(message: string): void {
   events.onLog?.(`[Tunnel] ${message}`);
@@ -175,6 +179,24 @@ function send(msg: ClientMessage): void {
       log(` ⬆ Sending: ${msg.type}${msg.type === "sessionError" ? ` (${(msg as { error: string }).error})` : ""}`);
     }
     ws.send(JSON.stringify(msg));
+  }
+}
+
+function startPingWatchdog(): void {
+  stopPingWatchdog();
+  pingWatchdog = setInterval(() => {
+    if (lastPingReceived > 0 && Date.now() - lastPingReceived > PING_WATCHDOG_TIMEOUT_MS) {
+      log("Server ping timeout — connection appears stale, forcing reconnect");
+      stopPingWatchdog();
+      ws?.terminate();
+    }
+  }, PING_WATCHDOG_INTERVAL_MS);
+}
+
+function stopPingWatchdog(): void {
+  if (pingWatchdog) {
+    clearInterval(pingWatchdog);
+    pingWatchdog = null;
   }
 }
 
@@ -1065,6 +1087,8 @@ function handleMessage(rawData: WebSocket.RawData): void {
     case "authOk":
       setStatus("connected");
       reconnectAttempts = 0;
+      lastPingReceived = Date.now();
+      startPingWatchdog();
       log(`   Profile ID: ${msg.profileId}`);
       break;
 
@@ -1163,6 +1187,7 @@ function handleMessage(rawData: WebSocket.RawData): void {
       break;
 
     case "ping":
+      lastPingReceived = Date.now();
       send({ type: "pong" });
       break;
 
@@ -1210,6 +1235,7 @@ export function connect(config: AppConfig, eventHandlers?: TunnelClientEvents): 
   ws.on("close", (code, reason) => {
     const wasConnected = status === "connected" || status === "scraping";
     setStatus("disconnected");
+    stopPingWatchdog();
 
     // Stop any active session
     stopSession().catch(() => {});
