@@ -7,6 +7,7 @@
 
 import WebSocket from "ws";
 import http from "http";
+import { spawn } from "child_process";
 import { launchChrome } from "./chrome-manager";
 import { createCdpBridge } from "./cdp-bridge";
 import type { AppConfig } from "./config";
@@ -410,11 +411,52 @@ async function withDirectPageCdp(
 }
 
 /**
- * Type text locally into Chrome via direct CDP Input.dispatchKeyEvent.
- * Bypasses the tunnel round-trip per keystroke — only one tunnel message
- * for the entire string.
+ * Type a single character via xdotool — produces real X11 keypress events,
+ * indistinguishable from manual keyboard input (or VNC keystrokes). CDP
+ * Input.dispatchKeyEvent is fingerprintable by anti-bot scripts (Upwork,
+ * for one); xdotool is not.
+ */
+function typeCharViaXdotool(ch: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const proc = spawn("xdotool", ["type", "--delay", "0", "--", ch], {
+      stdio: ["ignore", "ignore", "pipe"],
+    });
+    let stderr = "";
+    proc.stderr?.on("data", (d) => { stderr += d.toString(); });
+    proc.on("error", (err) => reject(err));
+    proc.on("close", (code) => {
+      if (code === 0) resolve();
+      else reject(new Error(`xdotool exit ${code}: ${stderr.trim()}`));
+    });
+  });
+}
+
+/**
+ * Type text locally into Chrome.
+ *
+ * On Linux we prefer xdotool (real X11 events — undetectable). Falls back
+ * to CDP Input.dispatchKeyEvent on other platforms or if xdotool fails,
+ * preserving previous behavior.
  */
 async function handleTypeText(text: string, charDelayMs: number): Promise<void> {
+  if (process.platform === "linux") {
+    try {
+      for (const ch of text) {
+        await typeCharViaXdotool(ch);
+        if (charDelayMs > 0) {
+          const variance = charDelayMs * 0.4;
+          const delay = charDelayMs + (Math.random() * 2 - 1) * variance;
+          await new Promise((r) => setTimeout(r, Math.max(8, delay)));
+        }
+      }
+      log(`Typed ${text.length} chars via xdotool (${charDelayMs}ms/char)`);
+      return;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      log(`xdotool typing failed (${msg}), falling back to CDP`);
+    }
+  }
+
   await withDirectPageCdp("typeText", 30_000, async (pageWs, nextId) => {
     for (const char of text) {
       pageWs.send(JSON.stringify({
@@ -435,7 +477,7 @@ async function handleTypeText(text: string, charDelayMs: number): Promise<void> 
       }
     }
   });
-  log(`Typed ${text.length} chars locally (${charDelayMs}ms/char)`);
+  log(`Typed ${text.length} chars locally via CDP (${charDelayMs}ms/char)`);
 }
 
 /**

@@ -17,8 +17,13 @@ xcode-select --install
 ### Linux (Debian/Ubuntu)
 
 ```bash
-sudo apt install libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+sudo apt install libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf xdotool
 ```
+
+`xdotool` is a runtime dependency: the sidecar uses it to inject real X11
+keystrokes (instead of CDP-injected events, which some sites fingerprint).
+The .deb / .rpm bundles declare it as a hard dep, but you'll also need it
+locally during `npm run dev`.
 
 ### Windows
 

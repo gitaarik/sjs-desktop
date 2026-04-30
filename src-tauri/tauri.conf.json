@@ -40,6 +40,14 @@
     "externalBin": [
       "binaries/sjs-sidecar"
     ],
+    "linux": {
+      "deb": {
+        "depends": ["xdotool"]
+      },
+      "rpm": {
+        "depends": ["xdotool"]
+      }
+    },
     "createUpdaterArtifacts": true
   },
   "plugins": {
