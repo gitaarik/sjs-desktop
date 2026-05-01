@@ -25,6 +25,17 @@ keystrokes (instead of CDP-injected events, which some sites fingerprint).
 The .deb / .rpm bundles declare it as a hard dep, but you'll also need it
 locally during `npm run dev`.
 
+### Per-platform keystroke injection
+
+The sidecar prefers OS-level keyboard injection (real keypresses, not CDP)
+when typing into the live browser, falling back to CDP if unavailable:
+
+| Platform | Tool | Notes |
+| --- | --- | --- |
+| Linux | `xdotool` | Install via package manager; declared as deb/rpm dep |
+| macOS | `osascript` | Built in; **first run** asks for Accessibility permission. If denied, falls back to CDP |
+| Windows | PowerShell `SendKeys` | Built in |
+
 ### Windows
 
 - [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) with the "Desktop development with C++" workload

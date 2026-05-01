@@ -411,49 +411,112 @@ async function withDirectPageCdp(
 }
 
 /**
- * Type a single character via xdotool — produces real X11 keypress events,
- * indistinguishable from manual keyboard input (or VNC keystrokes). CDP
- * Input.dispatchKeyEvent is fingerprintable by anti-bot scripts (Upwork,
- * for one); xdotool is not.
+ * Spawn a process and resolve when it exits cleanly. Used by the OS-level
+ * typing helpers (xdotool / osascript / powershell).
  */
-function typeCharViaXdotool(ch: string): Promise<void> {
+function runProc(cmd: string, args: string[]): Promise<void> {
   return new Promise((resolve, reject) => {
-    const proc = spawn("xdotool", ["type", "--delay", "0", "--", ch], {
-      stdio: ["ignore", "ignore", "pipe"],
-    });
+    const proc = spawn(cmd, args, { stdio: ["ignore", "ignore", "pipe"] });
     let stderr = "";
     proc.stderr?.on("data", (d) => { stderr += d.toString(); });
     proc.on("error", (err) => reject(err));
     proc.on("close", (code) => {
       if (code === 0) resolve();
-      else reject(new Error(`xdotool exit ${code}: ${stderr.trim()}`));
+      else reject(new Error(`${cmd} exit ${code}: ${stderr.trim()}`));
     });
   });
 }
 
 /**
- * Type text locally into Chrome.
+ * Linux: type each character via xdotool with random delay between chars.
+ * Produces real X11 keypress events, indistinguishable from manual input.
+ */
+async function typeViaXdotool(text: string, charDelayMs: number): Promise<void> {
+  for (const ch of text) {
+    await runProc("xdotool", ["type", "--delay", "0", "--", ch]);
+    if (charDelayMs > 0) {
+      const variance = charDelayMs * 0.4;
+      const delay = charDelayMs + (Math.random() * 2 - 1) * variance;
+      await new Promise((r) => setTimeout(r, Math.max(8, delay)));
+    }
+  }
+}
+
+/**
+ * macOS: build a single AppleScript that issues `keystroke` + `delay` per
+ * char. One osascript invocation total — avoids the ~150ms startup overhead
+ * per character. Generates real OS-level key events through System Events.
  *
- * On Linux we prefer xdotool (real X11 events — undetectable). Falls back
- * to CDP Input.dispatchKeyEvent on other platforms or if xdotool fails,
- * preserving previous behavior.
+ * Note: requires Accessibility permission for the host app. Without it,
+ * osascript fails and we fall back to CDP.
+ */
+async function typeViaOsascript(text: string, charDelayMs: number): Promise<void> {
+  const escapeApplescript = (s: string) =>
+    s.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+  const lines: string[] = [];
+  for (let i = 0; i < text.length; i++) {
+    lines.push(`keystroke "${escapeApplescript(text[i])}"`);
+    if (i < text.length - 1 && charDelayMs > 0) {
+      const variance = charDelayMs * 0.4;
+      const delay = Math.max(8, charDelayMs + (Math.random() * 2 - 1) * variance);
+      lines.push(`delay ${(delay / 1000).toFixed(3)}`);
+    }
+  }
+  const script = `tell application "System Events"\n${lines.join("\n")}\nend tell`;
+  await runProc("osascript", ["-e", script]);
+}
+
+/**
+ * Windows: build a single PowerShell that calls SendKeys + Start-Sleep per
+ * char. SendKeys synthesizes real Win32 keyboard events.
+ */
+async function typeViaSendKeys(text: string, charDelayMs: number): Promise<void> {
+  // SendKeys reserves these chars; wrap them in {} to type literally.
+  const sendKeysSpecial = /[+^~%(){}\[\]]/;
+  const stmts: string[] = [];
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    const wrapped = sendKeysSpecial.test(ch) ? `{${ch}}` : ch;
+    // Single-quote escaping for PowerShell string literal
+    const lit = wrapped.replace(/'/g, "''");
+    stmts.push(`[System.Windows.Forms.SendKeys]::SendWait('${lit}')`);
+    if (i < text.length - 1 && charDelayMs > 0) {
+      const variance = charDelayMs * 0.4;
+      const delay = Math.max(8, charDelayMs + (Math.random() * 2 - 1) * variance);
+      stmts.push(`Start-Sleep -Milliseconds ${Math.floor(delay)}`);
+    }
+  }
+  const script = `Add-Type -AssemblyName System.Windows.Forms; ${stmts.join("; ")}`;
+  await runProc("powershell", ["-NoProfile", "-Command", script]);
+}
+
+/**
+ * Type text locally into Chrome via OS-level keyboard injection.
+ *
+ * - Linux:   xdotool          (real X11 events)
+ * - macOS:   osascript        (System Events keystrokes)
+ * - Windows: PowerShell SendKeys (Win32 keyboard events)
+ *
+ * Falls back to CDP Input.dispatchKeyEvent if the OS-level path fails.
+ * CDP is fingerprintable by some anti-bot scripts (Upwork's Cloudflare),
+ * so we only use it as a last resort.
  */
 async function handleTypeText(text: string, charDelayMs: number): Promise<void> {
-  if (process.platform === "linux") {
+  const platform = process.platform;
+  let osMethod: string | null = null;
+  let osTyper: ((t: string, d: number) => Promise<void>) | null = null;
+  if (platform === "linux") { osMethod = "xdotool"; osTyper = typeViaXdotool; }
+  else if (platform === "darwin") { osMethod = "osascript"; osTyper = typeViaOsascript; }
+  else if (platform === "win32") { osMethod = "SendKeys"; osTyper = typeViaSendKeys; }
+
+  if (osTyper) {
     try {
-      for (const ch of text) {
-        await typeCharViaXdotool(ch);
-        if (charDelayMs > 0) {
-          const variance = charDelayMs * 0.4;
-          const delay = charDelayMs + (Math.random() * 2 - 1) * variance;
-          await new Promise((r) => setTimeout(r, Math.max(8, delay)));
-        }
-      }
-      log(`Typed ${text.length} chars via xdotool (${charDelayMs}ms/char)`);
+      await osTyper(text, charDelayMs);
+      log(`Typed ${text.length} chars via ${osMethod} (${charDelayMs}ms/char)`);
       return;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      log(`xdotool typing failed (${msg}), falling back to CDP`);
+      log(`${osMethod} typing failed (${msg}), falling back to CDP`);
     }
   }
 
