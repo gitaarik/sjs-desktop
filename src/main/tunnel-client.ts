@@ -491,6 +491,77 @@ async function typeViaSendKeys(text: string, charDelayMs: number): Promise<void>
 }
 
 /**
+ * Clear the focused input via OS-level select-all + delete. Same rationale
+ * as handleTypeText — CDP key events are fingerprintable; xdotool /
+ * osascript / SendKeys produce real OS keyboard events.
+ */
+async function handleClearInput(): Promise<void> {
+  const platform = process.platform;
+  try {
+    if (platform === "linux") {
+      // xdotool can chain keys in a single call: ctrl+a then BackSpace
+      await runProc("xdotool", ["key", "ctrl+a", "BackSpace"]);
+      log("Cleared input via xdotool");
+      return;
+    }
+    if (platform === "darwin") {
+      // System Events: Cmd+A select all, then key code 51 (delete/backspace)
+      const script = `tell application "System Events" to keystroke "a" using command down\ndelay 0.05\ntell application "System Events" to key code 51`;
+      await runProc("osascript", ["-e", script]);
+      log("Cleared input via osascript");
+      return;
+    }
+    if (platform === "win32") {
+      // SendKeys: ^a = Ctrl+A, {BACKSPACE} = backspace
+      const script = `Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait('^a'); Start-Sleep -Milliseconds 50; [System.Windows.Forms.SendKeys]::SendWait('{BACKSPACE}')`;
+      await runProc("powershell", ["-NoProfile", "-Command", script]);
+      log("Cleared input via SendKeys");
+      return;
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    log(`OS-level clearInput failed (${msg}), falling back to CDP`);
+  }
+
+  // CDP fallback
+  await withDirectPageCdp("clearInput", 30_000, async (pageWs, nextId) => {
+    const sendKey = (eventType: string, key: string, code: string, modifiers = 0) => {
+      pageWs.send(JSON.stringify({
+        id: nextId(),
+        method: "Input.dispatchKeyEvent",
+        params: { type: eventType, key, code, modifiers },
+      }));
+    };
+    sendKey("keyDown", "a", "KeyA", 2); // Ctrl modifier
+    sendKey("keyUp", "a", "KeyA", 2);
+    await new Promise((r) => setTimeout(r, 50));
+    sendKey("keyDown", "Backspace", "Backspace");
+    sendKey("keyUp", "Backspace", "Backspace");
+  });
+  log("Cleared input via CDP");
+}
+
+/**
+ * Press Enter via OS-level injection. Used for Send/Submit so submission
+ * doesn't need a CDP attach either.
+ */
+async function pressEnterOsLevel(): Promise<void> {
+  if (process.platform === "linux") {
+    await runProc("xdotool", ["key", "Return"]);
+  } else if (process.platform === "darwin") {
+    await runProc("osascript", ["-e", `tell application "System Events" to key code 36`]);
+  } else if (process.platform === "win32") {
+    await runProc("powershell", [
+      "-NoProfile",
+      "-Command",
+      `Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait('~')`,
+    ]);
+  } else {
+    throw new Error(`Unsupported platform for OS-level Enter: ${process.platform}`);
+  }
+}
+
+/**
  * Type text locally into Chrome via OS-level keyboard injection.
  *
  * - Linux:   xdotool          (real X11 events)
@@ -500,8 +571,10 @@ async function typeViaSendKeys(text: string, charDelayMs: number): Promise<void>
  * Falls back to CDP Input.dispatchKeyEvent if the OS-level path fails.
  * CDP is fingerprintable by some anti-bot scripts (Upwork's Cloudflare),
  * so we only use it as a last resort.
+ *
+ * If submitAfter is true, presses Enter at the end (also via OS-level).
  */
-async function handleTypeText(text: string, charDelayMs: number): Promise<void> {
+async function handleTypeText(text: string, charDelayMs: number, submitAfter = false): Promise<void> {
   const platform = process.platform;
   let osMethod: string | null = null;
   let osTyper: ((t: string, d: number) => Promise<void>) | null = null;
@@ -511,8 +584,13 @@ async function handleTypeText(text: string, charDelayMs: number): Promise<void> 
 
   if (osTyper) {
     try {
-      await osTyper(text, charDelayMs);
-      log(`Typed ${text.length} chars via ${osMethod} (${charDelayMs}ms/char)`);
+      if (text) await osTyper(text, charDelayMs);
+      if (submitAfter) {
+        // Brief settle so the page processes the typing event before we hit Enter.
+        if (text) await new Promise((r) => setTimeout(r, 80 + Math.random() * 60));
+        await pressEnterOsLevel();
+      }
+      log(`Typed ${text.length} chars via ${osMethod}${submitAfter ? " + Enter" : ""} (${charDelayMs}ms/char)`);
       return;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -539,8 +617,20 @@ async function handleTypeText(text: string, charDelayMs: number): Promise<void> 
         await new Promise((r) => setTimeout(r, Math.max(8, delay)));
       }
     }
+    if (submitAfter) {
+      pageWs.send(JSON.stringify({
+        id: nextId(),
+        method: "Input.dispatchKeyEvent",
+        params: { type: "keyDown", key: "Enter", code: "Enter", text: "\r" },
+      }));
+      pageWs.send(JSON.stringify({
+        id: nextId(),
+        method: "Input.dispatchKeyEvent",
+        params: { type: "keyUp", key: "Enter", code: "Enter" },
+      }));
+    }
   });
-  log(`Typed ${text.length} chars locally via CDP (${charDelayMs}ms/char)`);
+  log(`Typed ${text.length} chars locally via CDP${submitAfter ? " + Enter" : ""} (${charDelayMs}ms/char)`);
 }
 
 /**
@@ -1222,8 +1312,14 @@ function handleMessage(rawData: WebSocket.RawData): void {
       break;
 
     case "typeText":
-      handleTypeText(msg.text, msg.charDelayMs).catch((err) => {
+      handleTypeText(msg.text, msg.charDelayMs, msg.submitAfter ?? false).catch((err) => {
         log(`ERROR: typeText failed: ${err instanceof Error ? err.message : String(err)}`);
+      });
+      break;
+
+    case "clearInput":
+      handleClearInput().catch((err) => {
+        log(`ERROR: clearInput failed: ${err instanceof Error ? err.message : String(err)}`);
       });
       break;
 

@@ -81,6 +81,13 @@ export interface TunnelTypeText {
   text: string;
   /** Per-character delay in ms */
   charDelayMs: number;
+  /** If true, press Enter after typing (or just Enter if text is empty) — also OS-level. */
+  submitAfter?: boolean;
+}
+
+/** Server → Client: clear the focused input via OS-level select-all + delete. */
+export interface TunnelClearInput {
+  type: "clearInput";
 }
 
 export interface TunnelScrollWheel {
@@ -225,6 +232,7 @@ export type ServerMessage =
   | TunnelReleaseCdp
   | TunnelCdpVersionRequest
   | TunnelTypeText
+  | TunnelClearInput
   | TunnelScrollWheel
   | TunnelMouseMove
   | TunnelScreenshotRequest
