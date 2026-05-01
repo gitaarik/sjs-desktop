@@ -16,6 +16,8 @@ export interface TunnelAuthMessage {
   type: "auth";
   token: string;
   version: string;
+  /** True when the tunnel client runs on a virtual display (Xvfb/Docker) */
+  headless?: boolean;
 }
 
 export interface TunnelSessionReady {
@@ -119,6 +121,8 @@ export interface TunnelClickElement {
   timeout: number;
   /** Keyboard modifiers to hold during click (e.g. ["Control"] for Ctrl+click) */
   modifiers?: ("Control" | "Shift" | "Alt" | "Meta")[];
+  /** Mouse button — defaults to "left". Older clients ignore this. */
+  button?: "left" | "middle" | "right";
 }
 
 export interface TunnelScrollRevealLazyContent {

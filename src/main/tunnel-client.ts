@@ -860,6 +860,7 @@ async function handleClickElement(
   selector: string,
   timeout: number,
   modifiers?: string[],
+  button: "left" | "middle" | "right" = "left",
 ): Promise<void> {
   // Snapshot page targets before click to detect new tabs
   const cdpWsUrl = currentChromeSession!.cdpWsUrl;
@@ -972,13 +973,13 @@ async function handleClickElement(
     pageWs.send(JSON.stringify({
       id: nextId(),
       method: "Input.dispatchMouseEvent",
-      params: { type: "mousePressed", x: targetX, y: targetY, button: "left", clickCount: 1, modifiers: modifierBitmask },
+      params: { type: "mousePressed", x: targetX, y: targetY, button, clickCount: 1, modifiers: modifierBitmask },
     }));
     await new Promise((r) => setTimeout(r, 30 + Math.random() * 50));
     pageWs.send(JSON.stringify({
       id: nextId(),
       method: "Input.dispatchMouseEvent",
-      params: { type: "mouseReleased", x: targetX, y: targetY, button: "left", clickCount: 1, modifiers: modifierBitmask },
+      params: { type: "mouseReleased", x: targetX, y: targetY, button, clickCount: 1, modifiers: modifierBitmask },
     }));
 
     // 9. Release modifier keys (in reverse order)
@@ -1343,7 +1344,7 @@ function handleMessage(rawData: WebSocket.RawData): void {
       break;
 
     case "clickElement":
-      handleClickElement(msg.requestId, msg.selector, msg.timeout, msg.modifiers).catch((err) => {
+      handleClickElement(msg.requestId, msg.selector, msg.timeout, msg.modifiers, msg.button).catch((err) => {
         const error = err instanceof Error ? err.message : String(err);
         log(`ERROR: clickElement failed: ${error}`);
         send({ type: "clickElementResponse", requestId: msg.requestId, success: false, error });
