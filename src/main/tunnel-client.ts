@@ -842,6 +842,242 @@ function computeBezierPath(
   return points;
 }
 
+// =============================================================================
+// OS-level click helpers (Linux/macOS/Windows)
+//
+// Why OS-level instead of CDP: typing on this client uses real OS keystrokes
+// (xdotool / osascript / SendKeys) which target the OS-focused widget. CDP
+// `Input.dispatchMouseEvent` updates DOM focus inside the renderer but does
+// NOT move the browser window's OS keyboard focus, so after a navigation OS
+// focus may park on the omnibox — and the next typing call leaks the input
+// into the address bar. Routing clicks through OS-level mouse APIs keeps OS
+// focus in sync with DOM focus.
+// =============================================================================
+
+const XDOTOOL_MODIFIER_MAP: Record<string, string> = {
+  Control: "ctrl",
+  Shift:   "shift",
+  Alt:     "alt",
+  Meta:    "super",
+};
+const XDOTOOL_BUTTON_MAP: Record<"left" | "middle" | "right", number> = {
+  left: 1, middle: 2, right: 3,
+};
+
+/**
+ * Translate page coordinates (CSS pixels, viewport-relative) to absolute
+ * screen coordinates.
+ *
+ * `Browser.getWindowForTarget` reports the window position in screen pixels;
+ * `DOM.getBoxModel` returns CSS pixels relative to the layout viewport. On a
+ * HiDPI display these differ by `devicePixelRatio`. Multiplying the CSS
+ * offsets and the chrome-bar height by `dpr` puts everything in the same
+ * unit before adding the window origin.
+ */
+function pageToScreen(
+  pageX: number,
+  pageY: number,
+  win: { left: number; top: number; height: number },
+  viewportHeightCss: number,
+  dpr: number,
+): { x: number; y: number } {
+  const chromeBarHeightScreen = win.height - viewportHeightCss * dpr;
+  return {
+    x: Math.round(win.left + pageX * dpr),
+    y: Math.round(win.top + chromeBarHeightScreen + pageY * dpr),
+  };
+}
+
+/** Linux: real X11 mouse events via xdotool. */
+function clickViaXdotool(
+  path: { x: number; y: number }[],
+  button: "left" | "middle" | "right",
+  modifiers: string[] = [],
+): Promise<void> {
+  const buttonNum = XDOTOOL_BUTTON_MAP[button];
+  const xdotoolMods = modifiers
+    .map((m) => XDOTOOL_MODIFIER_MAP[m])
+    .filter((m): m is string => Boolean(m));
+
+  const args: string[] = [];
+  for (const mod of xdotoolMods) args.push("keydown", mod);
+  for (const point of path) {
+    args.push("mousemove", String(Math.round(point.x)), String(Math.round(point.y)));
+  }
+  args.push("click", String(buttonNum));
+  for (const mod of xdotoolMods.slice().reverse()) args.push("keyup", mod);
+
+  return new Promise((resolve, reject) => {
+    const proc = spawn("xdotool", args, { stdio: ["ignore", "ignore", "pipe"] });
+    let stderr = "";
+    proc.stderr?.on("data", (d) => { stderr += d.toString(); });
+    proc.on("error", reject);
+    proc.on("close", (code) => {
+      if (code === 0) resolve();
+      else reject(new Error(`xdotool click exit ${code}: ${stderr.trim()}`));
+    });
+  });
+}
+
+/**
+ * macOS: real Quartz mouse events via osascript + JXA + CoreGraphics. The
+ * JXA ObjC bridge calls `CGEventCreateMouseEvent`/`CGEventPost`, the same
+ * APIs `cliclick` uses internally, so no third-party binary is needed.
+ *
+ * Coordinates are in macOS points (== CSS pixels on Retina), so the screen
+ * path produced by pageToScreen with dpr=1 lines up directly. NOTE: macOS
+ * requires Accessibility / Input Monitoring permission for the host process
+ * — the same grant the existing osascript typing path already needs.
+ */
+function clickViaCgEvent(
+  path: { x: number; y: number }[],
+  button: "left" | "middle" | "right",
+  modifiers: string[] = [],
+): Promise<void> {
+  // Map modifier names to virtual key codes used by CGEventCreateKeyboardEvent.
+  // Reference: HIToolbox/Events.h.
+  const keyCodes: Record<string, number> = {
+    Control: 0x3B, // kVK_Control
+    Shift:   0x38, // kVK_Shift
+    Alt:     0x3A, // kVK_Option
+    Meta:    0x37, // kVK_Command
+  };
+  const buttonName = button === "left"
+    ? "Left"
+    : button === "right"
+    ? "Right"
+    : "Other"; // middle uses Other + button number 2
+  const cgButtonConst = button === "left"
+    ? "kCGMouseButtonLeft"
+    : button === "right"
+    ? "kCGMouseButtonRight"
+    : "kCGMouseButtonCenter";
+
+  const modKeys = modifiers
+    .map((m) => keyCodes[m])
+    .filter((c): c is number => c !== undefined);
+
+  const moves = path.map((p) =>
+    `post($.kCGEventMouseMoved, ${Math.round(p.x)}, ${Math.round(p.y)}, $.${cgButtonConst});`
+  ).join("\n");
+
+  const lastPoint = path[path.length - 1] ?? { x: 0, y: 0 };
+  const lx = Math.round(lastPoint.x);
+  const ly = Math.round(lastPoint.y);
+
+  // JXA script. The ObjC bridge accepts plain {x, y} as CGPoint when the
+  // function signature expects one — that's how struct passing works in JXA.
+  const script = `
+    ObjC.import("CoreGraphics");
+    function post(type, x, y, btn) {
+      const ev = $.CGEventCreateMouseEvent($(), type, { x: x, y: y }, btn);
+      $.CGEventPost($.kCGHIDEventTap, ev);
+    }
+    function postKey(keyCode, down) {
+      const ev = $.CGEventCreateKeyboardEvent($(), keyCode, down);
+      $.CGEventPost($.kCGHIDEventTap, ev);
+    }
+    ${modKeys.map((k) => `postKey(${k}, true);`).join("\n")}
+    ${moves}
+    post($.kCGEventMouseMoved, ${lx}, ${ly}, $.${cgButtonConst});
+    post($.kCGEvent${buttonName}MouseDown, ${lx}, ${ly}, $.${cgButtonConst});
+    post($.kCGEvent${buttonName}MouseUp, ${lx}, ${ly}, $.${cgButtonConst});
+    ${modKeys.slice().reverse().map((k) => `postKey(${k}, false);`).join("\n")}
+  `;
+
+  return new Promise((resolve, reject) => {
+    const proc = spawn("osascript", ["-l", "JavaScript", "-e", script], {
+      stdio: ["ignore", "ignore", "pipe"],
+    });
+    let stderr = "";
+    proc.stderr?.on("data", (d) => { stderr += d.toString(); });
+    proc.on("error", reject);
+    proc.on("close", (code) => {
+      if (code === 0) resolve();
+      else reject(new Error(`osascript click exit ${code}: ${stderr.trim()}`));
+    });
+  });
+}
+
+/**
+ * Windows: real Win32 mouse events via PowerShell + SendInput P/Invoke.
+ * `mouse_event` is the older API but still supported and simpler than
+ * SendInput for absolute positioning of a single click. The whole sequence
+ * runs in one PowerShell process to avoid per-step startup overhead.
+ *
+ * NOTE: SetCursorPos uses physical pixels on a DPI-aware process. Path
+ * coordinates from pageToScreen already include `dpr`, so they match.
+ */
+function clickViaSendInput(
+  path: { x: number; y: number }[],
+  button: "left" | "middle" | "right",
+  modifiers: string[] = [],
+): Promise<void> {
+  // mouse_event flags
+  const flags: Record<"left" | "middle" | "right", { down: number; up: number }> = {
+    left:   { down: 0x0002, up: 0x0004 },
+    middle: { down: 0x0020, up: 0x0040 },
+    right:  { down: 0x0008, up: 0x0010 },
+  };
+  const f = flags[button];
+
+  // Virtual-key codes for keybd_event
+  const vkCodes: Record<string, number> = {
+    Control: 0x11, Shift: 0x10, Alt: 0x12, Meta: 0x5B,
+  };
+  const KEYEVENTF_KEYUP = 0x0002;
+  const modVks = modifiers
+    .map((m) => vkCodes[m])
+    .filter((v): v is number => v !== undefined);
+
+  const moveLines = path
+    .map((p) => `[Mouse]::SetCursorPos(${Math.round(p.x)}, ${Math.round(p.y)})`)
+    .join("\n");
+
+  const ps = `
+    Add-Type @"
+    using System;
+    using System.Runtime.InteropServices;
+    public class Mouse {
+      [DllImport("user32.dll")] public static extern bool SetCursorPos(int X, int Y);
+      [DllImport("user32.dll")] public static extern void mouse_event(uint dwFlags, uint dx, uint dy, uint dwData, IntPtr dwExtraInfo);
+      [DllImport("user32.dll")] public static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, IntPtr dwExtraInfo);
+    }
+    "@
+    ${modVks.map((vk) => `[Mouse]::keybd_event(${vk}, 0, 0, [IntPtr]::Zero)`).join("\n")}
+    ${moveLines}
+    [Mouse]::mouse_event(${f.down}, 0, 0, 0, [IntPtr]::Zero)
+    Start-Sleep -Milliseconds 30
+    [Mouse]::mouse_event(${f.up}, 0, 0, 0, [IntPtr]::Zero)
+    ${modVks.slice().reverse().map((vk) => `[Mouse]::keybd_event(${vk}, 0, ${KEYEVENTF_KEYUP}, [IntPtr]::Zero)`).join("\n")}
+  `;
+
+  return new Promise((resolve, reject) => {
+    const proc = spawn("powershell", ["-NoProfile", "-Command", ps], {
+      stdio: ["ignore", "ignore", "pipe"],
+    });
+    let stderr = "";
+    proc.stderr?.on("data", (d) => { stderr += d.toString(); });
+    proc.on("error", reject);
+    proc.on("close", (code) => {
+      if (code === 0) resolve();
+      else reject(new Error(`powershell click exit ${code}: ${stderr.trim()}`));
+    });
+  });
+}
+
+/** Dispatch to the per-platform OS-level click implementation. */
+function clickViaOsLevel(
+  path: { x: number; y: number }[],
+  button: "left" | "middle" | "right",
+  modifiers: string[] = [],
+): Promise<void> {
+  if (process.platform === "linux") return clickViaXdotool(path, button, modifiers);
+  if (process.platform === "darwin") return clickViaCgEvent(path, button, modifiers);
+  if (process.platform === "win32") return clickViaSendInput(path, button, modifiers);
+  return Promise.reject(new Error(`Unsupported platform: ${process.platform}`));
+}
+
 /**
  * Click an element locally via direct CDP.
  * Executes: find element -> scroll into view -> get bounding box ->
@@ -939,9 +1175,43 @@ async function handleClickElement(
     // 5. Move mouse along natural bezier path
     const fromX = 1280 * (0.2 + Math.random() * 0.6);
     const fromY = 800 * (0.2 + Math.random() * 0.6);
-    const path = computeBezierPath(fromX, fromY, targetX, targetY);
+    const pagePath = computeBezierPath(fromX, fromY, targetX, targetY);
 
-    for (const point of path) {
+    // Try OS-level click first so the browser window receives a real OS
+    // mouse event and OS keyboard focus follows DOM focus. Falls back to
+    // CDP if the OS path errors. See run 555 for the bug this fixes.
+    try {
+      const { bounds } = await cdpCall<{
+        bounds: { left?: number; top?: number; width: number; height: number };
+      }>("Browser.getWindowForTarget", {});
+      const layoutMetrics = await cdpCall<{
+        cssLayoutViewport: { clientHeight: number };
+      }>("Page.getLayoutMetrics", {});
+      const dprResult = await cdpCall<{ result: { value?: number } }>(
+        "Runtime.evaluate",
+        { expression: "window.devicePixelRatio", returnByValue: true },
+      );
+
+      const win = {
+        left: bounds.left ?? 0,
+        top: bounds.top ?? 0,
+        height: bounds.height,
+      };
+      const viewportHeight = layoutMetrics.cssLayoutViewport.clientHeight;
+      const dpr = dprResult.result?.value ?? 1;
+
+      const screenPath = pagePath.map((p) =>
+        pageToScreen(p.x, p.y, win, viewportHeight, dpr)
+      );
+      await clickViaOsLevel(screenPath, button, modifiers ?? []);
+      return; // skip the CDP click path below
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      log(`OS-level click failed (${msg}), falling back to CDP`);
+    }
+
+    // CDP fallback (preserved for safety on unexpected errors).
+    for (const point of pagePath) {
       pageWs.send(JSON.stringify({
         id: nextId(),
         method: "Input.dispatchMouseEvent",
