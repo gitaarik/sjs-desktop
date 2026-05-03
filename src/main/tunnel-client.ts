@@ -217,6 +217,7 @@ async function handleStartSession(config: { startUrl?: string; headed?: boolean;
     currentChromeSession = await launchChrome({
       headed: config.headed ?? true,
     });
+    resetChromeWindowIdCache();
 
     // Create CDP bridge
     log("Creating CDP bridge...");
@@ -427,6 +428,82 @@ function runProc(cmd: string, args: string[]): Promise<void> {
   });
 }
 
+/** Spawn a process and resolve with stdout. */
+function runProcCapture(cmd: string, args: string[]): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const proc = spawn(cmd, args, { stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    proc.stdout?.on("data", (d) => { stdout += d.toString(); });
+    proc.stderr?.on("data", (d) => { stderr += d.toString(); });
+    proc.on("error", (err) => reject(err));
+    proc.on("close", (code) => {
+      if (code === 0) resolve(stdout);
+      else reject(new Error(`${cmd} exit ${code}: ${stderr.trim()}`));
+    });
+  });
+}
+
+// =============================================================================
+// Linux foreground detection
+//
+// OS-level input on Linux (xdotool key/mousemove/click without --window) goes
+// through XTest, which targets the X server's currently-focused window. If
+// the user has switched to another app, our keystrokes/clicks would land in
+// THEIR window — bad. So before each OS-level action we check whether Chrome
+// still owns the X focus. If yes → OS-level (real X events, max stealth).
+// If no → fall back to CDP via Playwright (renderer-level, doesn't disturb
+// the user's foreground app).
+//
+// Cached: the Chrome process's window IDs don't change once Chrome is up.
+// xdotool search by PID can return multiple windows (popups, dialogs); the
+// active foreground id needs to match any one of them.
+// =============================================================================
+
+let cachedChromeWindowIds: string[] | null = null;
+
+/** Reset the Chrome-window-id cache; called when Chrome (re)starts. */
+function resetChromeWindowIdCache(): void {
+  cachedChromeWindowIds = null;
+}
+
+async function getChromeWindowIdsLinux(): Promise<string[]> {
+  if (cachedChromeWindowIds && cachedChromeWindowIds.length > 0) {
+    return cachedChromeWindowIds;
+  }
+  const pid = currentChromeSession?.process.pid;
+  if (!pid) return [];
+  try {
+    const out = await runProcCapture("xdotool", [
+      "search", "--pid", String(pid),
+    ]);
+    const ids = out.trim().split(/\s+/).filter(Boolean);
+    if (ids.length > 0) cachedChromeWindowIds = ids;
+    return ids;
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Returns true when the X server's currently-focused window belongs to our
+ * Chrome process. On non-Linux platforms always returns false (caller
+ * decides what to do per-platform). On Wayland/XWayland, getactivewindow
+ * may not behave reliably; a failure is treated as "not focused" so we
+ * conservatively fall back to CDP rather than risk leaking input.
+ */
+async function isChromeFocusedLinux(): Promise<boolean> {
+  if (process.platform !== "linux") return false;
+  const chromeIds = await getChromeWindowIdsLinux();
+  if (chromeIds.length === 0) return false;
+  try {
+    const active = (await runProcCapture("xdotool", ["getactivewindow"])).trim();
+    return chromeIds.includes(active);
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Linux: type each character via xdotool with random delay between chars.
  * Produces real X11 keypress events, indistinguishable from manual input.
@@ -499,10 +576,14 @@ async function handleClearInput(): Promise<void> {
   const platform = process.platform;
   try {
     if (platform === "linux") {
-      // xdotool can chain keys in a single call: ctrl+a then BackSpace
-      await runProc("xdotool", ["key", "ctrl+a", "BackSpace"]);
-      log("Cleared input via xdotool");
-      return;
+      if (!(await isChromeFocusedLinux())) {
+        log("Chrome not focused, clearing via CDP to avoid input leakage");
+      } else {
+        // xdotool can chain keys in a single call: ctrl+a then BackSpace
+        await runProc("xdotool", ["key", "ctrl+a", "BackSpace"]);
+        log("Cleared input via xdotool");
+        return;
+      }
     }
     if (platform === "darwin") {
       // System Events: Cmd+A select all, then key code 51 (delete/backspace)
@@ -581,6 +662,15 @@ async function handleTypeText(text: string, charDelayMs: number, submitAfter = f
   if (platform === "linux") { osMethod = "xdotool"; osTyper = typeViaXdotool; }
   else if (platform === "darwin") { osMethod = "osascript"; osTyper = typeViaOsascript; }
   else if (platform === "win32") { osMethod = "SendKeys"; osTyper = typeViaSendKeys; }
+
+  // On Linux, xdotool/XTest sends keys to whichever window owns X focus —
+  // so if the user has tabbed away to another app, our keystrokes would
+  // leak into that app. Skip OS-level injection (and fall through to CDP)
+  // when Chrome isn't currently focused.
+  if (platform === "linux" && !(await isChromeFocusedLinux())) {
+    log("Chrome not focused, typing via CDP to avoid input leakage");
+    osTyper = null;
+  }
 
   if (osTyper) {
     try {
@@ -1187,7 +1277,17 @@ async function handleClickElement(
     // Try OS-level click first so the browser window receives a real OS
     // mouse event and OS keyboard focus follows DOM focus. Falls back to
     // CDP if the OS path errors. See run 555 for the bug this fixes.
-    try {
+    //
+    // On Linux, xdotool's mouse path moves the user's actual cursor to
+    // the click target — if Chrome isn't currently focused, that yanks
+    // the cursor away from whatever the user is doing in another app.
+    // Skip OS-level (use CDP) when Chrome doesn't own X focus.
+    const skipOsClickLinux = process.platform === "linux" &&
+      !(await isChromeFocusedLinux());
+    if (skipOsClickLinux) {
+      log("Chrome not focused, clicking via CDP to avoid cursor hijack");
+    }
+    if (!skipOsClickLinux) try {
       const { bounds } = await cdpCall<{
         bounds: { left?: number; top?: number; width: number; height: number };
       }>("Browser.getWindowForTarget", {});
