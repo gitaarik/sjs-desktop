@@ -1286,6 +1286,16 @@ async function handleClickElement(
       !(await isChromeFocusedLinux());
     if (skipOsClickLinux) {
       log("Chrome not focused, clicking via CDP to avoid cursor hijack");
+      // Synthesized CDP middle-clicks don't reliably trigger Chromium's
+      // native "open in new tab" path — the tab-open completion never
+      // signals back and the request hangs to its full timeout. Fail
+      // fast so the caller can fall back to its own Playwright-side
+      // middle-click instead of waiting out the hang.
+      if (button === "middle") {
+        throw new Error(
+          "middle-click via CDP not supported when Chrome is not focused",
+        );
+      }
     }
     if (!skipOsClickLinux) try {
       const { bounds } = await cdpCall<{
