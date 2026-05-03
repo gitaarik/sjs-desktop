@@ -899,10 +899,17 @@ function clickViaXdotool(
     .map((m) => XDOTOOL_MODIFIER_MAP[m])
     .filter((m): m is string => Boolean(m));
 
+  // --sync only the final move — without it, xdotool returns before the X
+  // server actually moves the cursor, and the trailing click can fire
+  // mid-path. (Intermediate moves stay async; they just paint a trail.)
   const args: string[] = [];
   for (const mod of xdotoolMods) args.push("keydown", mod);
-  for (const point of path) {
-    args.push("mousemove", String(Math.round(point.x)), String(Math.round(point.y)));
+  for (let i = 0; i < path.length; i++) {
+    const p = path[i];
+    const isLast = i === path.length - 1;
+    if (isLast) args.push("mousemove", "--sync");
+    else args.push("mousemove");
+    args.push(String(Math.round(p.x)), String(Math.round(p.y)));
   }
   args.push("click", String(buttonNum));
   for (const mod of xdotoolMods.slice().reverse()) args.push("keyup", mod);
