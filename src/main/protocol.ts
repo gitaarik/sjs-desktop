@@ -125,6 +125,22 @@ export interface TunnelClickElement {
   button?: "left" | "middle" | "right";
 }
 
+/**
+ * Click at viewport-relative CSS-pixel coordinates without resolving a
+ * selector. Lets the cloud-side reuse the element handle Playwright already
+ * has — site-agnostic, works with shadow DOM / iframes / dynamic IDs.
+ * Translated page→screen and driven via OS-level mouse events.
+ */
+export interface TunnelClickAt {
+  type: "clickAt";
+  requestId: string;
+  x: number;
+  y: number;
+  timeout: number;
+  modifiers?: ("Control" | "Shift" | "Alt" | "Meta")[];
+  button?: "left" | "middle" | "right";
+}
+
 export interface TunnelScrollRevealLazyContent {
   type: "scrollRevealLazyContent";
   requestId: string;
@@ -173,6 +189,13 @@ export interface TunnelClickElementResponse {
   success: boolean;
   /** Whether the click caused a new browser tab to open (detected locally) */
   newTabOpened?: boolean;
+  error?: string;
+}
+
+export interface TunnelClickAtResponse {
+  type: "clickAtResponse";
+  requestId: string;
+  success: boolean;
   error?: string;
 }
 
@@ -241,6 +264,7 @@ export type ServerMessage =
   | TunnelMouseMove
   | TunnelScreenshotRequest
   | TunnelClickElement
+  | TunnelClickAt
   | TunnelScrollRevealLazyContent
   | TunnelSetMinimized
   | TunnelCdpMessage
@@ -257,6 +281,7 @@ export type ClientMessage =
   | TunnelCdpVersionResponse
   | TunnelScreenshotResponse
   | TunnelClickElementResponse
+  | TunnelClickAtResponse
   | TunnelScrollRevealLazyContentResponse
   | TunnelCdpMessage
   | TunnelCdpBinary

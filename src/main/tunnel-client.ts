@@ -1407,6 +1407,96 @@ async function handleClickElement(
 }
 
 /**
+ * Click at viewport-relative CSS-pixel coordinates without resolving a
+ * selector. Used by the cloud's humanType to focus an input before xdotool
+ * typing — site-agnostic (works with shadow DOM, iframes, dynamic IDs)
+ * since the caller already has a Playwright element handle and just needs
+ * OS-level focus to land on its bounding box.
+ *
+ * No CDP fallback: the entire point is to move OS keyboard focus, and a
+ * CDP-only click would leave focus on the omnibox so the next xdotool
+ * keystrokes leak there. We error out instead and let the caller decide.
+ *
+ * On Linux, if Chrome doesn't currently own X focus we still error out —
+ * an xdotool click would either yank the user's cursor or fire on the
+ * wrong window. The caller's focus-verification check in `humanType` will
+ * surface this cleanly.
+ */
+async function handleClickAt(
+  requestId: string,
+  pageX: number,
+  pageY: number,
+  timeout: number,
+  modifiers?: string[],
+  button: "left" | "middle" | "right" = "left",
+): Promise<void> {
+  if (process.platform === "linux" && !(await isChromeFocusedLinux())) {
+    throw new Error("clickAt: Chrome is not focused — refusing OS-level click");
+  }
+
+  await withDirectPageCdp("clickAt", timeout + 5000, async (pageWs, nextId) => {
+    const cdpCall = <T = Record<string, unknown>>(method: string, params: Record<string, unknown> = {}): Promise<T> => {
+      return new Promise((resolve, reject) => {
+        const id = nextId();
+        const timer = setTimeout(() => {
+          pageWs.removeListener("message", onMsg);
+          reject(new Error(`${method} timeout`));
+        }, timeout);
+
+        const onMsg = (raw: WebSocket.RawData) => {
+          try {
+            const msg = JSON.parse(raw.toString());
+            if (msg.id === id) {
+              clearTimeout(timer);
+              pageWs.removeListener("message", onMsg);
+              if (msg.error) reject(new Error(`${method}: ${msg.error.message}`));
+              else resolve((msg.result || {}) as T);
+            }
+          } catch (err) {
+            log(`clickAt cdpCall parse error: ${err instanceof Error ? err.message : String(err)}`);
+          }
+        };
+
+        pageWs.on("message", onMsg);
+        pageWs.send(JSON.stringify({ id, method, params }));
+      });
+    };
+
+    const { bounds } = await cdpCall<{
+      bounds: { left?: number; top?: number; width: number; height: number };
+    }>("Browser.getWindowForTarget", {});
+    const layoutMetrics = await cdpCall<{
+      cssLayoutViewport: { clientHeight: number; clientWidth: number };
+    }>("Page.getLayoutMetrics", {});
+    const dprResult = await cdpCall<{ result: { value?: number } }>(
+      "Runtime.evaluate",
+      { expression: "window.devicePixelRatio", returnByValue: true },
+    );
+
+    const win = {
+      left: bounds.left ?? 0,
+      top: bounds.top ?? 0,
+      height: bounds.height,
+    };
+    const viewportH = layoutMetrics.cssLayoutViewport.clientHeight;
+    const viewportW = layoutMetrics.cssLayoutViewport.clientWidth;
+    const dpr = dprResult.result?.value ?? 1;
+
+    const fromX = viewportW * (0.2 + Math.random() * 0.6);
+    const fromY = viewportH * (0.2 + Math.random() * 0.6);
+    const pagePath = computeBezierPath(fromX, fromY, pageX, pageY);
+    const screenPath = pagePath.map((p) =>
+      pageToScreen(p.x, p.y, win, viewportH, dpr)
+    );
+
+    await clickViaOsLevel(screenPath, button, modifiers ?? []);
+  });
+
+  send({ type: "clickAtResponse", requestId, success: true });
+  log(`Clicked at (${Math.round(pageX)}, ${Math.round(pageY)}) via OS-level mouse${modifiers?.length ? ` [${modifiers.join("+")}]` : ""}`);
+}
+
+/**
  * Raw input forwarding (interactive browser control)
  */
 
@@ -1735,6 +1825,14 @@ function handleMessage(rawData: WebSocket.RawData): void {
         const error = err instanceof Error ? err.message : String(err);
         log(`ERROR: clickElement failed: ${error}`);
         send({ type: "clickElementResponse", requestId: msg.requestId, success: false, error });
+      });
+      break;
+
+    case "clickAt":
+      handleClickAt(msg.requestId, msg.x, msg.y, msg.timeout, msg.modifiers, msg.button).catch((err) => {
+        const error = err instanceof Error ? err.message : String(err);
+        log(`ERROR: clickAt failed: ${error}`);
+        send({ type: "clickAtResponse", requestId: msg.requestId, success: false, error });
       });
       break;
 
