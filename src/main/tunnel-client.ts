@@ -1458,18 +1458,30 @@ async function handleClickAt(
   modifiers?: string[],
   button: "left" | "middle" | "right" = "left",
 ): Promise<void> {
-  if (process.platform === "linux" && !(await isChromeFocusedLinux())) {
-    // Force Chrome to the foreground. Without OS focus, the xdotool click
-    // would either land on whatever the user has focused, or refuse —
-    // and the subsequent xdotool typing would leak there too. Better to
-    // disrupt the user's foreground app once than to silently misroute
-    // input.
-    const activated = await activateChromeWindowLinux();
-    if (!activated) {
-      throw new Error(
-        "clickAt: could not activate Chrome window — refusing OS-level click",
-      );
+  // Decide whether to use OS-level (xdotool) or CDP click. The choice
+  // gates the whole strategy:
+  //   • OS-level: real X11 mouse event → moves OS focus → xdotool typing
+  //     after this lands in Chrome (full stealth, undetectable).
+  //   • CDP: dispatched via Input.dispatchMouseEvent → moves DOM focus
+  //     only → handleTypeText will detect Chrome-not-focused and fall
+  //     back to CDP key events for typing too. Less stealthy, but
+  //     doesn't disturb the user's foreground app.
+  //
+  // When Chrome is already focused: OS-level. When the user has another
+  // app focused: respect `sessionKeepMinimized` — that flag is the user's
+  // explicit "keep Chrome out of my way" preference, so we don't yank it
+  // to the foreground. Without that flag, we force-focus on the
+  // assumption the user wants the scrape visible.
+  let useOsLevel = false;
+  if (process.platform === "linux") {
+    if (await isChromeFocusedLinux()) {
+      useOsLevel = true;
+    } else if (!sessionKeepMinimized) {
+      useOsLevel = await activateChromeWindowLinux();
     }
+  } else {
+    // macOS / Windows: handled by clickViaOsLevel itself; assume focused.
+    useOsLevel = true;
   }
 
   await withDirectPageCdp("clickAt", timeout + 5000, async (pageWs, nextId) => {
@@ -1500,38 +1512,96 @@ async function handleClickAt(
       });
     };
 
-    const { bounds } = await cdpCall<{
-      bounds: { left?: number; top?: number; width: number; height: number };
-    }>("Browser.getWindowForTarget", {});
+    // Layout metrics are only needed for the OS-level path's page→screen
+    // translation; CDP click works in viewport coords directly.
     const layoutMetrics = await cdpCall<{
       cssLayoutViewport: { clientHeight: number; clientWidth: number };
     }>("Page.getLayoutMetrics", {});
-    const dprResult = await cdpCall<{ result: { value?: number } }>(
-      "Runtime.evaluate",
-      { expression: "window.devicePixelRatio", returnByValue: true },
-    );
-
-    const win = {
-      left: bounds.left ?? 0,
-      top: bounds.top ?? 0,
-      height: bounds.height,
-    };
     const viewportH = layoutMetrics.cssLayoutViewport.clientHeight;
     const viewportW = layoutMetrics.cssLayoutViewport.clientWidth;
-    const dpr = dprResult.result?.value ?? 1;
 
     const fromX = viewportW * (0.2 + Math.random() * 0.6);
     const fromY = viewportH * (0.2 + Math.random() * 0.6);
     const pagePath = computeBezierPath(fromX, fromY, pageX, pageY);
-    const screenPath = pagePath.map((p) =>
-      pageToScreen(p.x, p.y, win, viewportH, dpr)
-    );
 
-    await clickViaOsLevel(screenPath, button, modifiers ?? []);
+    if (useOsLevel) {
+      const { bounds } = await cdpCall<{
+        bounds: { left?: number; top?: number; width: number; height: number };
+      }>("Browser.getWindowForTarget", {});
+      const dprResult = await cdpCall<{ result: { value?: number } }>(
+        "Runtime.evaluate",
+        { expression: "window.devicePixelRatio", returnByValue: true },
+      );
+      const win = {
+        left: bounds.left ?? 0,
+        top: bounds.top ?? 0,
+        height: bounds.height,
+      };
+      const dpr = dprResult.result?.value ?? 1;
+      const screenPath = pagePath.map((p) =>
+        pageToScreen(p.x, p.y, win, viewportH, dpr)
+      );
+      await clickViaOsLevel(screenPath, button, modifiers ?? []);
+      return;
+    }
+
+    // CDP fallback. DOM focus moves to the element (so subsequent CDP
+    // typing in handleTypeText lands there), but OS focus stays on the
+    // user's foreground app. The cloud's humanType verifies focus via
+    // `document.activeElement` and aborts cleanly if the click missed.
+    for (const point of pagePath) {
+      pageWs.send(JSON.stringify({
+        id: nextId(),
+        method: "Input.dispatchMouseEvent",
+        params: { type: "mouseMoved", x: point.x, y: point.y },
+      }));
+      if (point.delayMs > 0) {
+        await new Promise((r) => setTimeout(r, point.delayMs));
+      }
+    }
+    await new Promise((r) => setTimeout(r, 50 + Math.random() * 100));
+
+    const modifierBitmask = (modifiers ?? []).reduce((mask, mod) => {
+      const info = MODIFIER_MAP[mod];
+      if (info) {
+        pageWs.send(JSON.stringify({
+          id: nextId(),
+          method: "Input.dispatchKeyEvent",
+          params: { type: "rawKeyDown", key: info.key, code: info.code, windowsVirtualKeyCode: info.keyCode, modifiers: mask | info.bit },
+        }));
+        return mask | info.bit;
+      }
+      return mask;
+    }, 0);
+
+    pageWs.send(JSON.stringify({
+      id: nextId(),
+      method: "Input.dispatchMouseEvent",
+      params: { type: "mousePressed", x: pageX, y: pageY, button, clickCount: 1, modifiers: modifierBitmask },
+    }));
+    await new Promise((r) => setTimeout(r, 30 + Math.random() * 50));
+    pageWs.send(JSON.stringify({
+      id: nextId(),
+      method: "Input.dispatchMouseEvent",
+      params: { type: "mouseReleased", x: pageX, y: pageY, button, clickCount: 1, modifiers: modifierBitmask },
+    }));
+
+    for (const mod of (modifiers ?? []).slice().reverse()) {
+      const info = MODIFIER_MAP[mod];
+      if (info) {
+        pageWs.send(JSON.stringify({
+          id: nextId(),
+          method: "Input.dispatchKeyEvent",
+          params: { type: "keyUp", key: info.key, code: info.code, windowsVirtualKeyCode: info.keyCode },
+        }));
+      }
+    }
   });
 
   send({ type: "clickAtResponse", requestId, success: true });
-  log(`Clicked at (${Math.round(pageX)}, ${Math.round(pageY)}) via OS-level mouse${modifiers?.length ? ` [${modifiers.join("+")}]` : ""}`);
+  log(
+    `Clicked at (${Math.round(pageX)}, ${Math.round(pageY)}) via ${useOsLevel ? "OS-level mouse" : "CDP"}${modifiers?.length ? ` [${modifiers.join("+")}]` : ""}`,
+  );
 }
 
 /**
