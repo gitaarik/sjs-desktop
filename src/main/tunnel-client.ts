@@ -505,6 +505,34 @@ async function isChromeFocusedLinux(): Promise<boolean> {
 }
 
 /**
+ * Force Chrome to the foreground so subsequent OS-level input lands in it.
+ * Used by `handleClickAt` (the typing-focus entry point) where falling back
+ * to CDP would defeat the purpose: tunnel typing also relies on OS focus,
+ * and a CDP click here would leave the next xdotool keystroke leaking into
+ * whatever app the user has focused. Visible disruption is the trade-off
+ * the user accepts when scraping with the desktop tunnel-client.
+ *
+ * `windowactivate --sync` blocks until the X server confirms the focus
+ * change, so the caller can xdotool-click immediately after returning.
+ */
+async function activateChromeWindowLinux(): Promise<boolean> {
+  if (process.platform !== "linux") return false;
+  const chromeIds = await getChromeWindowIdsLinux();
+  if (chromeIds.length === 0) return false;
+  // Picking the first id is fine — for normal browser windows the search
+  // returns one. Pop-ups/dialogs would each have their own id, but those
+  // aren't where typing-focus lands; the main browser window is.
+  const targetId = chromeIds[0];
+  try {
+    await runProc("xdotool", ["windowactivate", "--sync", targetId]);
+    // Verify the activation actually took (some window managers refuse).
+    return await isChromeFocusedLinux();
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Linux: type each character via xdotool with random delay between chars.
  * Produces real X11 keypress events, indistinguishable from manual input.
  */
@@ -1431,7 +1459,17 @@ async function handleClickAt(
   button: "left" | "middle" | "right" = "left",
 ): Promise<void> {
   if (process.platform === "linux" && !(await isChromeFocusedLinux())) {
-    throw new Error("clickAt: Chrome is not focused — refusing OS-level click");
+    // Force Chrome to the foreground. Without OS focus, the xdotool click
+    // would either land on whatever the user has focused, or refuse —
+    // and the subsequent xdotool typing would leak there too. Better to
+    // disrupt the user's foreground app once than to silently misroute
+    // input.
+    const activated = await activateChromeWindowLinux();
+    if (!activated) {
+      throw new Error(
+        "clickAt: could not activate Chrome window — refusing OS-level click",
+      );
+    }
   }
 
   await withDirectPageCdp("clickAt", timeout + 5000, async (pageWs, nextId) => {
