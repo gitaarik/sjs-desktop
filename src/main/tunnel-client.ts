@@ -168,6 +168,28 @@ function log(message: string): void {
   events.onLog?.(`[Tunnel] ${message}`);
 }
 
+/**
+ * Serializes lifecycle operations (startSession / stopSession / releaseCdp)
+ * onto a single promise chain so they can't interleave.
+ *
+ * Without this, the cloud sending `releaseCdp` immediately followed by
+ * `stopSession` would fire both handlers concurrently — `stopSession`
+ * would null out `currentChromeSession` mid-flight through
+ * `handleReleaseCdp`, producing "Failed to restore Chrome: Timeout" and
+ * NPEs on follow-up `.cdpWsUrl` access (run 688 trailing errors).
+ *
+ * Errors thrown by enqueued tasks are caught here so one bad handler
+ * doesn't break the chain for everything queued after it.
+ */
+let lifecycleQueue: Promise<void> = Promise.resolve();
+function enqueueLifecycle(label: string, fn: () => Promise<void>): void {
+  lifecycleQueue = lifecycleQueue
+    .then(fn)
+    .catch((err) => {
+      log(`lifecycle error in ${label}: ${err instanceof Error ? err.message : String(err)}`);
+    });
+}
+
 function setStatus(newStatus: TunnelStatus): void {
   status = newStatus;
   events.onStatusChange?.(newStatus);
@@ -307,27 +329,44 @@ async function reloadAllPages(browserCdpWsUrl: string): Promise<void> {
 async function handleReleaseCdp(): Promise<void> {
   if (!currentCdpBridge || !currentChromeSession || !ws) return;
 
+  // Snapshot the session reference at entry. `stopSession` (which can
+  // arrive milliseconds after `releaseCdp` if the cloud is shutting down
+  // the run) will null out `currentChromeSession` — if we keep reading the
+  // module-level binding after each await we hit a NOENT in the middle of
+  // the function. Snapshotting + checking the live ref after each await
+  // means "session was torn down, nothing to release" is a graceful exit
+  // instead of two ERROR log lines on the normal shutdown sequence.
+  const session = currentChromeSession;
+  const tunnelWs = ws;
+
   log("Releasing CDP bridge (resetting session state)...");
   currentCdpBridge.close();
   currentCdpBridge = null;
 
   // Restore Chrome so the user can interact during manual intervention
-
   try {
-    await setChromeWindowState(currentChromeSession.cdpWsUrl, "normal");
+    await setChromeWindowState(session.cdpWsUrl, "normal");
     log("Chrome restored for intervention");
   } catch (err) {
-    log(`Failed to restore Chrome: ${err instanceof Error ? err.message : String(err)}`);
+    // If session was torn down during the await, this failure is expected
+    // — Chrome is already dead. Otherwise it's a real problem worth logging.
+    if (currentChromeSession === session) {
+      log(`Failed to restore Chrome: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+  if (currentChromeSession !== session) {
+    log("releaseCdp: session torn down during restore — skipping reconnect");
+    return;
   }
 
   // Immediately reopen with a fresh CDP session — clears all Playwright
   // state (auto-attach, page sessions, domain enablements) so Chrome
   // behaves like a normal browser during manual intervention.
   try {
-    const cdpUrl = currentChromeSession.cdpWsUrl;
-    currentCdpBridge = await createCdpBridge({
+    const cdpUrl = session.cdpWsUrl;
+    const newBridge = await createCdpBridge({
       cdpWsUrl: cdpUrl,
-      tunnelWs: ws,
+      tunnelWs,
       onPlaywrightReconnect() {
         if (!sessionKeepMinimized) return;
         // Playwright reconnected — minimize Chrome again after a short delay
@@ -342,13 +381,23 @@ async function handleReleaseCdp(): Promise<void> {
       },
       onNewTarget: () => reMinimize(cdpUrl),
     });
+    if (currentChromeSession !== session) {
+      // Session ended while createCdpBridge was awaiting — discard the new
+      // bridge so we don't leak a CDP connection to a dead Chrome.
+      newBridge.close();
+      log("releaseCdp: session torn down during reconnect — discarded fresh bridge");
+      return;
+    }
+    currentCdpBridge = newBridge;
     log("CDP bridge reconnected (fresh session)");
 
     // Reload all pages — existing tabs have stale network/JS state from
     // when Playwright was controlling them and won't work without a reload.
-    await reloadAllPages(currentChromeSession.cdpWsUrl);
+    await reloadAllPages(session.cdpWsUrl);
   } catch (err) {
-    log(`ERROR: Failed to reconnect CDP bridge: ${err instanceof Error ? err.message : String(err)}`);
+    if (currentChromeSession === session) {
+      log(`ERROR: Failed to reconnect CDP bridge: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 }
 
@@ -2168,15 +2217,18 @@ function handleMessage(rawData: WebSocket.RawData): void {
 
     case "startSession":
       log(`   Config: headed=${msg.config.headed ?? true}, startUrl=${msg.config.startUrl || "(none)"}`);
-      handleStartSession(msg.config);
+      enqueueLifecycle("startSession", () => handleStartSession(msg.config));
       break;
 
     case "stopSession":
-      stopSession().then(() => setStatus("connected"));
+      enqueueLifecycle("stopSession", async () => {
+        await stopSession();
+        setStatus("connected");
+      });
       break;
 
     case "releaseCdp":
-      handleReleaseCdp();
+      enqueueLifecycle("releaseCdp", handleReleaseCdp);
       break;
 
     case "cdpVersionRequest":
