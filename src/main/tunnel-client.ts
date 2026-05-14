@@ -182,7 +182,16 @@ function log(message: string): void {
  * doesn't break the chain for everything queued after it.
  */
 let lifecycleQueue: Promise<void> = Promise.resolve();
+
+/**
+ * Set the instant `stopSession` is enqueued, cleared when it actually
+ * begins executing. Lets earlier-queued handlers (specifically
+ * `handleReleaseCdp`) skip work that's about to be undone.
+ */
+let pendingStopSession = false;
+
 function enqueueLifecycle(label: string, fn: () => Promise<void>): void {
+  if (label === "stopSession") pendingStopSession = true;
   lifecycleQueue = lifecycleQueue
     .then(fn)
     .catch((err) => {
@@ -329,6 +338,18 @@ async function reloadAllPages(browserCdpWsUrl: string): Promise<void> {
 async function handleReleaseCdp(): Promise<void> {
   if (!currentCdpBridge || !currentChromeSession || !ws) return;
 
+  // Skip everything when a stopSession is already queued behind us. The
+  // restore + reconnect + page reload would all get torn down again in
+  // milliseconds — wasted work and a visible window flash on shutdown.
+  // Still close the bridge so stopSession's `currentCdpBridge.close()`
+  // is a no-op rather than touching a stale handle.
+  if (pendingStopSession) {
+    log("releaseCdp: stopSession queued — short-circuiting (closing bridge only)");
+    currentCdpBridge.close();
+    currentCdpBridge = null;
+    return;
+  }
+
   // Snapshot the session reference at entry. `stopSession` (which can
   // arrive milliseconds after `releaseCdp` if the cloud is shutting down
   // the run) will null out `currentChromeSession` — if we keep reading the
@@ -356,6 +377,13 @@ async function handleReleaseCdp(): Promise<void> {
   }
   if (currentChromeSession !== session) {
     log("releaseCdp: session torn down during restore — skipping reconnect");
+    return;
+  }
+  // Second check: stopSession may have arrived during the restore. If so,
+  // skip the expensive reconnect + reload — same reasoning as the entry
+  // check, just catches a later arrival.
+  if (pendingStopSession) {
+    log("releaseCdp: stopSession queued during restore — skipping reconnect");
     return;
   }
 
@@ -2173,6 +2201,9 @@ async function handleCdpVersionRequest(): Promise<void> {
 }
 
 async function stopSession(): Promise<void> {
+  // Clear the "stop is queued" flag — once we're actually executing, any
+  // releaseCdp queued *behind* us shouldn't short-circuit on our account.
+  pendingStopSession = false;
   if (currentCdpBridge) {
     log("Closing CDP bridge...");
     currentCdpBridge.close();
