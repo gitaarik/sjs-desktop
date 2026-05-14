@@ -1049,28 +1049,46 @@ function isPointInPageArea(
   return screenX >= x0 && screenX <= x1 && screenY >= y0 && screenY <= y1;
 }
 
-/** Linux: real X11 mouse events via xdotool. */
+/**
+ * Linux: real X11 mouse events via xdotool.
+ *
+ * `path` is in CSS pixels (the unit produced by `pageToScreen`). On a
+ * fractional-scaled HiDPI X11 setup (Framework laptop at dpr=1.5,
+ * confirmed in run 686), xdotool's screen-coord input is in *physical*
+ * pixels — the X server reports the native resolution while Chrome's CDP
+ * `bounds` and viewport metrics are in DIPs. Without this scale step the
+ * cursor lands at physical y = (CSS y), which on dpr=1.5 is `CSS y / 1.5`
+ * in CSS terms — about 65% up the page, often inside Chrome's URL bar
+ * instead of the target element. dpr=1 is a no-op so non-scaled setups
+ * are unaffected.
+ */
 function clickViaXdotool(
   path: { x: number; y: number }[],
   button: "left" | "middle" | "right",
   modifiers: string[] = [],
+  dpr = 1,
 ): Promise<void> {
   const buttonNum = XDOTOOL_BUTTON_MAP[button];
   const xdotoolMods = modifiers
     .map((m) => XDOTOOL_MODIFIER_MAP[m])
     .filter((m): m is string => Boolean(m));
 
+  const physicalPath = path.map((p) => ({
+    x: Math.round(p.x * dpr),
+    y: Math.round(p.y * dpr),
+  }));
+
   // --sync only the final move — without it, xdotool returns before the X
   // server actually moves the cursor, and the trailing click can fire
   // mid-path. (Intermediate moves stay async; they just paint a trail.)
   const args: string[] = [];
   for (const mod of xdotoolMods) args.push("keydown", mod);
-  for (let i = 0; i < path.length; i++) {
-    const p = path[i];
-    const isLast = i === path.length - 1;
+  for (let i = 0; i < physicalPath.length; i++) {
+    const p = physicalPath[i];
+    const isLast = i === physicalPath.length - 1;
     if (isLast) args.push("mousemove", "--sync");
     else args.push("mousemove");
-    args.push(String(Math.round(p.x)), String(Math.round(p.y)));
+    args.push(String(p.x), String(p.y));
   }
   args.push("click", String(buttonNum));
   for (const mod of xdotoolMods.slice().reverse()) args.push("keyup", mod);
@@ -1085,19 +1103,20 @@ function clickViaXdotool(
       else reject(new Error(`xdotool click exit ${code}: ${stderr.trim()}`));
     });
   }).then(async () => {
-    // Verify where the cursor actually landed. xdotool's screen-coord
-    // input and the X server's notion of pixels can diverge on HiDPI /
-    // scaled displays in ways that aren't obvious from CDP alone. Logging
-    // the post-click cursor + active window closes the loop: if these
-    // disagree with our computed target, the coord math is still off.
+    // Verify where the cursor actually landed. Logs both the CSS target
+    // (what pageToScreen gave us) and the physical target (what we
+    // actually told xdotool) alongside xdotool's reported position, so
+    // any remaining drift is obvious.
     try {
       const [loc, active] = await Promise.all([
         runProcCapture("xdotool", ["getmouselocation"]).catch(() => ""),
         runProcCapture("xdotool", ["getactivewindow", "getwindowname"]).catch(() => ""),
       ]);
-      const target = path[path.length - 1];
+      const cssTarget = path[path.length - 1];
+      const physTarget = physicalPath[physicalPath.length - 1];
       log(
-        `xdotool post-click: target=(${Math.round(target.x)},${Math.round(target.y)}) ` +
+        `xdotool post-click: cssTarget=(${Math.round(cssTarget.x)},${Math.round(cssTarget.y)}) ` +
+          `physTarget=(${physTarget.x},${physTarget.y}) dpr=${dpr} ` +
           `actual=${loc.trim() || "(unknown)"} activeWindow=${active.trim() || "(unknown)"}`,
       );
     } catch { /* best-effort logging */ }
@@ -1202,7 +1221,12 @@ function clickViaSendInput(
   path: { x: number; y: number }[],
   button: "left" | "middle" | "right",
   modifiers: string[] = [],
+  dpr = 1,
 ): Promise<void> {
+  // SetCursorPos on a DPI-aware process expects physical px; pageToScreen
+  // hands us CSS px, so scale here. Untested on HiDPI Windows — adjust
+  // here if it lands wrong, do NOT push dpr handling back into pageToScreen.
+  path = path.map((p) => ({ x: Math.round(p.x * dpr), y: Math.round(p.y * dpr) }));
   // mouse_event flags
   const flags: Record<"left" | "middle" | "right", { down: number; up: number }> = {
     left:   { down: 0x0002, up: 0x0004 },
@@ -1256,15 +1280,26 @@ function clickViaSendInput(
   });
 }
 
-/** Dispatch to the per-platform OS-level click implementation. */
+/**
+ * Dispatch to the per-platform OS-level click implementation.
+ *
+ * `path` is in CSS pixels. Each platform helper handles the CSS→OS-API
+ * unit conversion internally:
+ *  - Linux  (xdotool / X11): physical px on scaled HiDPI → multiply by dpr.
+ *  - macOS  (CGEvent): points == CSS px on Retina → ignore dpr.
+ *  - Windows (SetCursorPos on a DPI-aware process): physical px → multiply
+ *    by dpr (untested on HiDPI Windows; if it lands wrong there, the
+ *    SendInput helper is where to adjust).
+ */
 function clickViaOsLevel(
   path: { x: number; y: number }[],
   button: "left" | "middle" | "right",
   modifiers: string[] = [],
+  dpr = 1,
 ): Promise<void> {
-  if (process.platform === "linux") return clickViaXdotool(path, button, modifiers);
+  if (process.platform === "linux") return clickViaXdotool(path, button, modifiers, dpr);
   if (process.platform === "darwin") return clickViaCgEvent(path, button, modifiers);
-  if (process.platform === "win32") return clickViaSendInput(path, button, modifiers);
+  if (process.platform === "win32") return clickViaSendInput(path, button, modifiers, dpr);
   return Promise.reject(new Error(`Unsupported platform: ${process.platform}`));
 }
 
@@ -1397,6 +1432,10 @@ async function handleClickElement(
       const layoutMetrics = await cdpCall<{
         cssLayoutViewport: { clientHeight: number };
       }>("Page.getLayoutMetrics", {});
+      const dprResult = await cdpCall<{ result: { value?: number } }>(
+        "Runtime.evaluate",
+        { expression: "window.devicePixelRatio", returnByValue: true },
+      );
 
       const win = {
         left: bounds.left ?? 0,
@@ -1404,11 +1443,12 @@ async function handleClickElement(
         height: bounds.height,
       };
       const viewportHeight = layoutMetrics.cssLayoutViewport.clientHeight;
+      const dpr = dprResult.result?.value ?? 1;
 
       const screenPath = pagePath.map((p) =>
         pageToScreen(p.x, p.y, win, viewportHeight)
       );
-      await clickViaOsLevel(screenPath, button, modifiers ?? []);
+      await clickViaOsLevel(screenPath, button, modifiers ?? [], dpr);
       return; // skip the CDP click path below
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -1661,7 +1701,7 @@ async function handleClickAt(
         );
       }
 
-      await clickViaOsLevel(screenPath, button, modifiers ?? []);
+      await clickViaOsLevel(screenPath, button, modifiers ?? [], dpr);
       return;
     }
 
