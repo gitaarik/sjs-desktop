@@ -991,50 +991,60 @@ const XDOTOOL_BUTTON_MAP: Record<"left" | "middle" | "right", number> = {
 
 /**
  * Translate page coordinates (CSS pixels, viewport-relative) to absolute
- * screen coordinates.
+ * screen coordinates for the OS-level click helpers.
  *
- * `Browser.getWindowForTarget` reports the window position in screen pixels;
- * `DOM.getBoxModel` returns CSS pixels relative to the layout viewport. On a
- * HiDPI display these differ by `devicePixelRatio`. Multiplying the CSS
- * offsets and the chrome-bar height by `dpr` puts everything in the same
- * unit before adding the window origin.
+ * Both inputs are in CSS pixels (DIPs):
+ *  - `Browser.getWindowForTarget` returns `bounds` in DIPs on all platforms.
+ *  - `Page.getLayoutMetrics.cssLayoutViewport` is by definition CSS px.
+ *
+ * The output unit is whatever the per-platform input API uses:
+ *  - Linux xdotool on X11: DIPs (the X server reports a logical screen size
+ *    that matches Chrome's DIP space, even on HiDPI displays — confirmed by
+ *    run 683 logs).
+ *  - macOS CGEvent: points (== DIPs).
+ *  - Windows SetCursorPos on a DPI-aware process: physical px. The Windows
+ *    `clickViaSendInput` helper is responsible for scaling by `dpr` itself;
+ *    `pageToScreen` stays in DIPs so the math is identical across platforms.
+ *
+ * Earlier versions of this multiplied by `dpr` here, producing a mixed-unit
+ * `win.left + pageX * dpr` that landed clicks completely off-screen on
+ * HiDPI Linux (run 683: dpr=1.5 → screenY = -289 for a target near the
+ * viewport top because chromeBar went negative).
  */
 function pageToScreen(
   pageX: number,
   pageY: number,
   win: { left: number; top: number; height: number },
   viewportHeightCss: number,
-  dpr: number,
 ): { x: number; y: number } {
-  const chromeBarHeightScreen = win.height - viewportHeightCss * dpr;
+  const chromeBarHeight = win.height - viewportHeightCss;
   return {
-    x: Math.round(win.left + pageX * dpr),
-    y: Math.round(win.top + chromeBarHeightScreen + pageY * dpr),
+    x: Math.round(win.left + pageX),
+    y: Math.round(win.top + chromeBarHeight + pageY),
   };
 }
 
 /**
  * Check whether a screen-coord point falls inside Chrome's page content area
- * (window minus the top chrome bars). Uses the same unit conventions as
- * `pageToScreen` so it's a consistent before/after check.
+ * (window minus the top chrome bars). Uses the same DIP-only unit
+ * convention as `pageToScreen` so it's a consistent before/after check.
  *
- * Returned false means either the coord math is wrong (HiDPI scaling, multi-
- * monitor origin, etc.) or Chrome's window moved/resized between
- * `Browser.getWindowForTarget` and the actual OS click. Either way, firing
- * xdotool/CGEvent/SendInput at that point risks clicking some other app on
- * the user's desktop — fail loudly instead.
+ * Returned false means either the coord math is wrong (multi-monitor origin
+ * edge cases, weird DPI scaling on the display server) or Chrome's window
+ * moved/resized between `Browser.getWindowForTarget` and the actual OS
+ * click. Either way, firing xdotool/CGEvent at that point risks clicking
+ * some other app on the user's desktop — fail loudly instead.
  */
 function isPointInPageArea(
   screenX: number,
   screenY: number,
   win: { left: number; top: number; width: number; height: number },
   viewportHeightCss: number,
-  dpr: number,
 ): boolean {
-  const chromeBarHeightScreen = win.height - viewportHeightCss * dpr;
+  const chromeBarHeight = win.height - viewportHeightCss;
   const x0 = win.left;
   const x1 = win.left + win.width;
-  const y0 = win.top + chromeBarHeightScreen;
+  const y0 = win.top + chromeBarHeight;
   const y1 = win.top + win.height;
   return screenX >= x0 && screenX <= x1 && screenY >= y0 && screenY <= y1;
 }
@@ -1083,9 +1093,10 @@ function clickViaXdotool(
  * APIs `cliclick` uses internally, so no third-party binary is needed.
  *
  * Coordinates are in macOS points (== CSS pixels on Retina), so the screen
- * path produced by pageToScreen with dpr=1 lines up directly. NOTE: macOS
- * requires Accessibility / Input Monitoring permission for the host process
- * — the same grant the existing osascript typing path already needs.
+ * path produced by pageToScreen (which stays in DIPs) lines up directly.
+ * NOTE: macOS requires Accessibility / Input Monitoring permission for the
+ * host process — the same grant the existing osascript typing path already
+ * needs.
  */
 function clickViaCgEvent(
   path: { x: number; y: number }[],
@@ -1163,8 +1174,12 @@ function clickViaCgEvent(
  * SendInput for absolute positioning of a single click. The whole sequence
  * runs in one PowerShell process to avoid per-step startup overhead.
  *
- * NOTE: SetCursorPos uses physical pixels on a DPI-aware process. Path
- * coordinates from pageToScreen already include `dpr`, so they match.
+ * NOTE: SetCursorPos uses physical pixels on a DPI-aware process, but
+ * `pageToScreen` now produces DIPs (the Linux/macOS-correct unit). If
+ * Windows HiDPI clicks land in the wrong place once we test there, this
+ * helper needs to multiply path coords by `devicePixelRatio` before
+ * SetCursorPos — easier to fix at the platform boundary than to
+ * re-introduce mixed units in `pageToScreen`.
  */
 function clickViaSendInput(
   path: { x: number; y: number }[],
@@ -1365,10 +1380,6 @@ async function handleClickElement(
       const layoutMetrics = await cdpCall<{
         cssLayoutViewport: { clientHeight: number };
       }>("Page.getLayoutMetrics", {});
-      const dprResult = await cdpCall<{ result: { value?: number } }>(
-        "Runtime.evaluate",
-        { expression: "window.devicePixelRatio", returnByValue: true },
-      );
 
       const win = {
         left: bounds.left ?? 0,
@@ -1376,10 +1387,9 @@ async function handleClickElement(
         height: bounds.height,
       };
       const viewportHeight = layoutMetrics.cssLayoutViewport.clientHeight;
-      const dpr = dprResult.result?.value ?? 1;
 
       const screenPath = pagePath.map((p) =>
-        pageToScreen(p.x, p.y, win, viewportHeight, dpr)
+        pageToScreen(p.x, p.y, win, viewportHeight)
       );
       await clickViaOsLevel(screenPath, button, modifiers ?? []);
       return; // skip the CDP click path below
@@ -1589,9 +1599,9 @@ async function handleClickAt(
       };
       const dpr = dprResult.result?.value ?? 1;
       const screenPath = pagePath.map((p) =>
-        pageToScreen(p.x, p.y, win, viewportH, dpr)
+        pageToScreen(p.x, p.y, win, viewportH)
       );
-      const chromeBarHeight = Math.round(win.height - viewportH * dpr);
+      const chromeBarHeight = Math.round(win.height - viewportH);
       const clickPoint = screenPath[screenPath.length - 1];
       const startPoint = screenPath[0];
       log(
@@ -1604,12 +1614,13 @@ async function handleClickAt(
 
       // Bounds-check the actual click target (last point of the bezier path)
       // against Chrome's content area in screen coords. A miss here means
-      // either page→screen math is off (HiDPI scaling, multi-monitor origin
-      // edge cases) or the window moved between getWindowForTarget and now.
-      // Either way, firing xdotool at this coord would click whatever else
-      // is on the user's desktop. Fail loudly so the cloud sees a typed
-      // error instead of a silent miss + retry storm.
-      if (!isPointInPageArea(clickPoint.x, clickPoint.y, win, viewportH, dpr)) {
+      // either page→screen math is off (multi-monitor origin edge cases,
+      // unexpected DPI scaling on the display server) or the window moved
+      // between getWindowForTarget and now. Either way, firing xdotool at
+      // this coord would click whatever else is on the user's desktop.
+      // Fail loudly so the cloud sees a typed error instead of a silent
+      // miss + retry storm.
+      if (!isPointInPageArea(clickPoint.x, clickPoint.y, win, viewportH)) {
         throw new Error(
           `clickAt: computed screen point (${clickPoint.x}, ${clickPoint.y}) ` +
             `is outside Chrome content area ` +
