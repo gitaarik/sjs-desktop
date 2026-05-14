@@ -540,6 +540,144 @@ async function activateChromeWindowLinux(): Promise<boolean> {
 }
 
 /**
+ * Read Chrome's main window geometry from xdotool — that is, in *xdotool's
+ * own coordinate system*. Different X11 setups (no scaling, GNOME fractional
+ * scaling, multi-monitor, XWayland, etc.) report different units to xdotool
+ * versus what Chrome's CDP reports for the same window, so we measure
+ * instead of assuming a `dpr`-based conversion.
+ *
+ * Returns null when xdotool isn't available or no Chrome window can be
+ * found — the caller falls back to a less-reliable derivation.
+ */
+async function getChromeXdotoolGeometryLinux(): Promise<
+  { x: number; y: number; width: number; height: number } | null
+> {
+  if (process.platform !== "linux") return null;
+  const chromeIds = await getChromeWindowIdsLinux();
+  if (chromeIds.length === 0) return null;
+  // Walk the candidate window IDs (xdotool search --pid returns one per
+  // top-level window — popups, dialogs, etc.). The main browser window is
+  // the largest visible one; picking the largest by area is a robust
+  // heuristic across WMs.
+  let best: { x: number; y: number; width: number; height: number } | null = null;
+  for (const id of chromeIds) {
+    try {
+      const out = await runProcCapture("xdotool", ["getwindowgeometry", "--shell", id]);
+      const fields: Record<string, number> = {};
+      for (const line of out.split("\n")) {
+        const m = line.match(/^([A-Z]+)=(-?\d+)$/);
+        if (m) fields[m[1]] = parseInt(m[2], 10);
+      }
+      if (
+        typeof fields.X === "number" && typeof fields.Y === "number" &&
+        typeof fields.WIDTH === "number" && typeof fields.HEIGHT === "number" &&
+        fields.WIDTH > 0 && fields.HEIGHT > 0
+      ) {
+        const cand = { x: fields.X, y: fields.Y, width: fields.WIDTH, height: fields.HEIGHT };
+        if (!best || cand.width * cand.height > best.width * best.height) best = cand;
+      }
+    } catch { /* try next id */ }
+  }
+  return best;
+}
+
+/**
+ * Convert a CSS-pixel screen-coord path into xdotool's own coordinate
+ * system, using empirically-measured scale factors derived from comparing
+ * `Browser.getWindowForTarget.bounds` (CSS px / DIPs) with
+ * `xdotool getwindowgeometry` (xdotool px) for the same window.
+ *
+ * This replaces all the dpr / "is xdotool physical or logical px?" guessing:
+ * we just ask both subsystems where Chrome is, take the ratio, and apply it.
+ * On dpr=1 setups with no compositor scaling the ratio is 1 and this is a
+ * no-op. On HiDPI fractional-scaled setups (run 686: Framework laptop at
+ * dpr=1.5) the ratio comes out ≈ dpr. On Wayland-via-XWayland or oddly
+ * configured X servers the ratio can be something else entirely — and
+ * that's fine, we don't care what it *should* be, only what it *is*.
+ *
+ * Returns null when xdotool's geometry is unavailable; the caller can then
+ * decide whether to skip the OS-level click or attempt a fallback.
+ */
+async function scaleCssPathToXdotoolLinux(
+  cssPath: { x: number; y: number }[],
+  cdpBounds: { left: number; top: number; width: number; height: number },
+): Promise<
+  | {
+      path: { x: number; y: number }[];
+      scaleX: number;
+      scaleY: number;
+      xdotoolGeo: { x: number; y: number; width: number; height: number };
+    }
+  | null
+> {
+  const xdotoolGeo = await getChromeXdotoolGeometryLinux();
+  if (!xdotoolGeo) return null;
+  if (cdpBounds.width <= 0 || cdpBounds.height <= 0) return null;
+
+  const scaleX = xdotoolGeo.width / cdpBounds.width;
+  const scaleY = xdotoolGeo.height / cdpBounds.height;
+
+  // Anchor on xdotool's reported window position rather than cdpBounds *
+  // scale. The two systems can have different screen origins (multi-monitor
+  // edge cases, WM panel offsets); xdotool's own position is authoritative
+  // for xdotool's coord system.
+  const path = cssPath.map((p) => ({
+    x: Math.round(xdotoolGeo.x + (p.x - cdpBounds.left) * scaleX),
+    y: Math.round(xdotoolGeo.y + (p.y - cdpBounds.top) * scaleY),
+  }));
+
+  return { path, scaleX, scaleY, xdotoolGeo };
+}
+
+/**
+ * Convert a CSS-pixel screen-coord path into the unit system expected by
+ * the current platform's OS-API click helper.
+ *
+ * Linux: empirical scaling via `scaleCssPathToXdotoolLinux` — measures
+ *   xdotool's actual window geometry against CDP's and uses that ratio,
+ *   instead of guessing whether xdotool wants DIPs or physical px on this
+ *   particular X11 / Wayland / scaling configuration. Falls back to a
+ *   dpr-based approximation if xdotool can't report geometry (logs warn).
+ * macOS: identity — CGEvent uses points which equal CSS px on Retina.
+ * Windows: multiply by dpr — SetCursorPos on a DPI-aware process wants
+ *   physical px. Untested on HiDPI Windows; if it lands wrong there, the
+ *   right fix is to add an empirical measurement like Linux, not to
+ *   reintroduce dpr math elsewhere.
+ */
+async function convertCssPathToOsUnits(
+  cssPath: { x: number; y: number }[],
+  cdpBounds: { left: number; top: number; width: number; height: number },
+  dpr: number,
+): Promise<{ x: number; y: number }[]> {
+  if (process.platform === "linux") {
+    const scaled = await scaleCssPathToXdotoolLinux(cssPath, cdpBounds);
+    if (scaled) {
+      const tgt = scaled.path[scaled.path.length - 1];
+      log(
+        `osPath (linux): xdotoolGeo=(${scaled.xdotoolGeo.x},${scaled.xdotoolGeo.y} ` +
+          `${scaled.xdotoolGeo.width}x${scaled.xdotoolGeo.height}) ` +
+          `cdpBounds=(${cdpBounds.left},${cdpBounds.top} ${cdpBounds.width}x${cdpBounds.height}) ` +
+          `scaleX=${scaled.scaleX.toFixed(3)} scaleY=${scaled.scaleY.toFixed(3)} → target=(${tgt.x},${tgt.y})`,
+      );
+      if (Math.abs(scaled.scaleX - scaled.scaleY) > 0.05) {
+        log(
+          `osPath (linux): WARN scaleX (${scaled.scaleX.toFixed(3)}) ≠ scaleY ` +
+            `(${scaled.scaleY.toFixed(3)}) — non-uniform display scaling; click may drift`,
+        );
+      }
+      return scaled.path;
+    }
+    log(`osPath (linux): xdotool getwindowgeometry unavailable — falling back to dpr=${dpr}`);
+    return cssPath.map((p) => ({ x: Math.round(p.x * dpr), y: Math.round(p.y * dpr) }));
+  }
+  if (process.platform === "win32") {
+    return cssPath.map((p) => ({ x: Math.round(p.x * dpr), y: Math.round(p.y * dpr) }));
+  }
+  // macOS (or anything else): pass through CSS px
+  return cssPath.map((p) => ({ x: Math.round(p.x), y: Math.round(p.y) }));
+}
+
+/**
  * Linux: type each character via xdotool with random delay between chars.
  * Produces real X11 keypress events, indistinguishable from manual input.
  */
@@ -1052,43 +1190,32 @@ function isPointInPageArea(
 /**
  * Linux: real X11 mouse events via xdotool.
  *
- * `path` is in CSS pixels (the unit produced by `pageToScreen`). On a
- * fractional-scaled HiDPI X11 setup (Framework laptop at dpr=1.5,
- * confirmed in run 686), xdotool's screen-coord input is in *physical*
- * pixels — the X server reports the native resolution while Chrome's CDP
- * `bounds` and viewport metrics are in DIPs. Without this scale step the
- * cursor lands at physical y = (CSS y), which on dpr=1.5 is `CSS y / 1.5`
- * in CSS terms — about 65% up the page, often inside Chrome's URL bar
- * instead of the target element. dpr=1 is a no-op so non-scaled setups
- * are unaffected.
+ * `path` is in xdotool's own coordinate system — the caller is responsible
+ * for the CSS-px → xdotool-px conversion (see `scaleCssPathToXdotoolLinux`),
+ * since the right scale factor depends on display-server configuration and
+ * can only be measured, not assumed.
  */
 function clickViaXdotool(
   path: { x: number; y: number }[],
   button: "left" | "middle" | "right",
   modifiers: string[] = [],
-  dpr = 1,
 ): Promise<void> {
   const buttonNum = XDOTOOL_BUTTON_MAP[button];
   const xdotoolMods = modifiers
     .map((m) => XDOTOOL_MODIFIER_MAP[m])
     .filter((m): m is string => Boolean(m));
 
-  const physicalPath = path.map((p) => ({
-    x: Math.round(p.x * dpr),
-    y: Math.round(p.y * dpr),
-  }));
-
   // --sync only the final move — without it, xdotool returns before the X
   // server actually moves the cursor, and the trailing click can fire
   // mid-path. (Intermediate moves stay async; they just paint a trail.)
   const args: string[] = [];
   for (const mod of xdotoolMods) args.push("keydown", mod);
-  for (let i = 0; i < physicalPath.length; i++) {
-    const p = physicalPath[i];
-    const isLast = i === physicalPath.length - 1;
+  for (let i = 0; i < path.length; i++) {
+    const p = path[i];
+    const isLast = i === path.length - 1;
     if (isLast) args.push("mousemove", "--sync");
     else args.push("mousemove");
-    args.push(String(p.x), String(p.y));
+    args.push(String(Math.round(p.x)), String(Math.round(p.y)));
   }
   args.push("click", String(buttonNum));
   for (const mod of xdotoolMods.slice().reverse()) args.push("keyup", mod);
@@ -1103,20 +1230,18 @@ function clickViaXdotool(
       else reject(new Error(`xdotool click exit ${code}: ${stderr.trim()}`));
     });
   }).then(async () => {
-    // Verify where the cursor actually landed. Logs both the CSS target
-    // (what pageToScreen gave us) and the physical target (what we
-    // actually told xdotool) alongside xdotool's reported position, so
-    // any remaining drift is obvious.
+    // Verify where the cursor actually landed. Coords here are already in
+    // xdotool's unit system, so `actual` should match `target` exactly. A
+    // mismatch would mean xdotool itself clamped or translated our coords
+    // (e.g. clicking off-screen) — useful diagnostic data.
     try {
       const [loc, active] = await Promise.all([
         runProcCapture("xdotool", ["getmouselocation"]).catch(() => ""),
         runProcCapture("xdotool", ["getactivewindow", "getwindowname"]).catch(() => ""),
       ]);
-      const cssTarget = path[path.length - 1];
-      const physTarget = physicalPath[physicalPath.length - 1];
+      const target = path[path.length - 1];
       log(
-        `xdotool post-click: cssTarget=(${Math.round(cssTarget.x)},${Math.round(cssTarget.y)}) ` +
-          `physTarget=(${physTarget.x},${physTarget.y}) dpr=${dpr} ` +
+        `xdotool post-click: target=(${Math.round(target.x)},${Math.round(target.y)}) ` +
           `actual=${loc.trim() || "(unknown)"} activeWindow=${active.trim() || "(unknown)"}`,
       );
     } catch { /* best-effort logging */ }
@@ -1221,12 +1346,13 @@ function clickViaSendInput(
   path: { x: number; y: number }[],
   button: "left" | "middle" | "right",
   modifiers: string[] = [],
-  dpr = 1,
 ): Promise<void> {
-  // SetCursorPos on a DPI-aware process expects physical px; pageToScreen
-  // hands us CSS px, so scale here. Untested on HiDPI Windows — adjust
-  // here if it lands wrong, do NOT push dpr handling back into pageToScreen.
-  path = path.map((p) => ({ x: Math.round(p.x * dpr), y: Math.round(p.y * dpr) }));
+  // SetCursorPos on a DPI-aware process expects physical px. The caller
+  // (handleClickAt) is responsible for scaling CSS px → physical px before
+  // calling this — typically `path.map(p => ({ x: p.x * dpr, y: p.y * dpr }))`.
+  // Untested on HiDPI Windows; if it lands wrong, the cleanest fix is to
+  // adopt an empirical measurement like the Linux path uses, not to
+  // re-introduce dpr math in `pageToScreen`.
   // mouse_event flags
   const flags: Record<"left" | "middle" | "right", { down: number; up: number }> = {
     left:   { down: 0x0002, up: 0x0004 },
@@ -1283,23 +1409,25 @@ function clickViaSendInput(
 /**
  * Dispatch to the per-platform OS-level click implementation.
  *
- * `path` is in CSS pixels. Each platform helper handles the CSS→OS-API
- * unit conversion internally:
- *  - Linux  (xdotool / X11): physical px on scaled HiDPI → multiply by dpr.
- *  - macOS  (CGEvent): points == CSS px on Retina → ignore dpr.
- *  - Windows (SetCursorPos on a DPI-aware process): physical px → multiply
- *    by dpr (untested on HiDPI Windows; if it lands wrong there, the
- *    SendInput helper is where to adjust).
+ * `path` MUST already be in the per-platform OS-API unit system — the
+ * caller is responsible for the CSS-px → OS-API conversion:
+ *  - Linux:   use `scaleCssPathToXdotoolLinux` (empirical, measured from
+ *             xdotool getwindowgeometry vs CDP bounds — no dpr assumptions).
+ *  - macOS:   pass CSS px directly (CGEvent uses points == CSS px on Retina).
+ *  - Windows: multiply by dpr before calling (SetCursorPos on a DPI-aware
+ *             process wants physical px; untested on HiDPI Windows).
+ *
+ * Keeping the unit conversion at the call site, rather than buried in each
+ * platform helper, makes the assumption explicit and easy to audit.
  */
 function clickViaOsLevel(
   path: { x: number; y: number }[],
   button: "left" | "middle" | "right",
   modifiers: string[] = [],
-  dpr = 1,
 ): Promise<void> {
-  if (process.platform === "linux") return clickViaXdotool(path, button, modifiers, dpr);
+  if (process.platform === "linux") return clickViaXdotool(path, button, modifiers);
   if (process.platform === "darwin") return clickViaCgEvent(path, button, modifiers);
-  if (process.platform === "win32") return clickViaSendInput(path, button, modifiers, dpr);
+  if (process.platform === "win32") return clickViaSendInput(path, button, modifiers);
   return Promise.reject(new Error(`Unsupported platform: ${process.platform}`));
 }
 
@@ -1440,15 +1568,17 @@ async function handleClickElement(
       const win = {
         left: bounds.left ?? 0,
         top: bounds.top ?? 0,
+        width: bounds.width,
         height: bounds.height,
       };
       const viewportHeight = layoutMetrics.cssLayoutViewport.clientHeight;
       const dpr = dprResult.result?.value ?? 1;
 
-      const screenPath = pagePath.map((p) =>
+      const cssScreenPath = pagePath.map((p) =>
         pageToScreen(p.x, p.y, win, viewportHeight)
       );
-      await clickViaOsLevel(screenPath, button, modifiers ?? [], dpr);
+      const osPath = await convertCssPathToOsUnits(cssScreenPath, win, dpr);
+      await clickViaOsLevel(osPath, button, modifiers ?? []);
       return; // skip the CDP click path below
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -1655,31 +1785,25 @@ async function handleClickAt(
         height: bounds.height,
       };
       const dpr = dprResult.result?.value ?? 1;
-      const screenPath = pagePath.map((p) =>
+      const cssScreenPath = pagePath.map((p) =>
         pageToScreen(p.x, p.y, win, viewportH)
       );
       const chromeBarHeight = Math.round(win.height - viewportH);
-      const clickPoint = screenPath[screenPath.length - 1];
-      const startPoint = screenPath[0];
+      const cssClickPoint = cssScreenPath[cssScreenPath.length - 1];
       log(
         `clickAt coords: win=(${win.left},${win.top} ${win.width}x${win.height}) ` +
           `viewport=${viewportW}x${viewportH} dpr=${dpr} chromeBar=${chromeBarHeight} | ` +
           `page=(${Math.round(pageX)},${Math.round(pageY)}) → ` +
-          `screen=(${clickPoint.x},${clickPoint.y}) ` +
-          `path=${screenPath.length}pts starting at screen=(${startPoint.x},${startPoint.y})`,
+          `cssScreen=(${cssClickPoint.x},${cssClickPoint.y}) pathPts=${cssScreenPath.length}`,
       );
 
-      // Bounds-check the actual click target (last point of the bezier path)
-      // against Chrome's content area in screen coords. A miss here means
-      // either page→screen math is off (multi-monitor origin edge cases,
-      // unexpected DPI scaling on the display server) or the window moved
-      // between getWindowForTarget and now. Either way, firing xdotool at
-      // this coord would click whatever else is on the user's desktop.
-      // Fail loudly so the cloud sees a typed error instead of a silent
-      // miss + retry storm.
-      if (!isPointInPageArea(clickPoint.x, clickPoint.y, win, viewportH)) {
+      // Bounds-check the click target against Chrome's content area in CSS
+      // px. If the math takes us outside the window, firing the OS click
+      // would land on another app — fail loudly with a typed error rather
+      // than silently miss.
+      if (!isPointInPageArea(cssClickPoint.x, cssClickPoint.y, win, viewportH)) {
         throw new Error(
-          `clickAt: computed screen point (${clickPoint.x}, ${clickPoint.y}) ` +
+          `clickAt: computed CSS screen point (${cssClickPoint.x}, ${cssClickPoint.y}) ` +
             `is outside Chrome content area ` +
             `(win=${win.left},${win.top} ${win.width}x${win.height}, ` +
             `viewportH=${viewportH}, dpr=${dpr}); ` +
@@ -1690,10 +1814,7 @@ async function handleClickAt(
       // Re-verify Chrome still owns X focus right before xdotool fires.
       // The earlier check at the top of handleClickAt is now stale — we did
       // several CDP round-trips and bezier-path math in between, and the
-      // user could have alt-tabbed to another app. xdotool's mousemove+click
-      // ignores focus and fires at the absolute screen coord, but the
-      // typing call that follows this click *does* care about focus and
-      // would leak keystrokes to wherever focus landed.
+      // user could have alt-tabbed to another app.
       if (process.platform === "linux" && !(await isChromeFocusedLinux())) {
         throw new Error(
           "clickAt: Chrome lost X focus between focus check and OS click; " +
@@ -1701,7 +1822,12 @@ async function handleClickAt(
         );
       }
 
-      await clickViaOsLevel(screenPath, button, modifiers ?? [], dpr);
+      // Convert CSS → OS-API units (xdotool px on Linux, points on macOS,
+      // physical px on Windows). On Linux this uses empirically-measured
+      // scale factors from xdotool's own getwindowgeometry; we don't trust
+      // dpr-based assumptions across display-server configurations.
+      const osPath = await convertCssPathToOsUnits(cssScreenPath, win, dpr);
+      await clickViaOsLevel(osPath, button, modifiers ?? []);
       return;
     }
 
