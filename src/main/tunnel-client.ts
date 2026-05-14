@@ -518,16 +518,23 @@ async function isChromeFocusedLinux(): Promise<boolean> {
 async function activateChromeWindowLinux(): Promise<boolean> {
   if (process.platform !== "linux") return false;
   const chromeIds = await getChromeWindowIdsLinux();
-  if (chromeIds.length === 0) return false;
+  if (chromeIds.length === 0) {
+    log("activateChromeWindowLinux: no Chrome window IDs found");
+    return false;
+  }
   // Picking the first id is fine — for normal browser windows the search
   // returns one. Pop-ups/dialogs would each have their own id, but those
   // aren't where typing-focus lands; the main browser window is.
   const targetId = chromeIds[0];
+  log(`activateChromeWindowLinux: windowactivate --sync ${targetId} (chromeIds=[${chromeIds.join(",")}])`);
   try {
     await runProc("xdotool", ["windowactivate", "--sync", targetId]);
     // Verify the activation actually took (some window managers refuse).
-    return await isChromeFocusedLinux();
-  } catch {
+    const ok = await isChromeFocusedLinux();
+    log(`activateChromeWindowLinux: ${ok ? "focused after activate" : "still not focused after activate (WM refused?)"}`);
+    return ok;
+  } catch (err) {
+    log(`activateChromeWindowLinux: failed (${err instanceof Error ? err.message : String(err)})`);
     return false;
   }
 }
@@ -1498,17 +1505,33 @@ async function handleClickAt(
   // explicit "keep Chrome out of my way" preference, so we don't yank it
   // to the foreground. Without that flag, we force-focus on the
   // assumption the user wants the scrape visible.
+  log(
+    `clickAt request: page=(${Math.round(pageX)}, ${Math.round(pageY)}) ` +
+      `timeout=${timeout}ms button=${button}` +
+      `${modifiers?.length ? ` mods=[${modifiers.join(",")}]` : ""} ` +
+      `keepMinimized=${sessionKeepMinimized}`,
+  );
+
   let useOsLevel = false;
+  let decisionReason = "";
   if (process.platform === "linux") {
     if (await isChromeFocusedLinux()) {
       useOsLevel = true;
+      decisionReason = "Chrome already X-focused";
     } else if (!sessionKeepMinimized) {
       useOsLevel = await activateChromeWindowLinux();
+      decisionReason = useOsLevel
+        ? "Chrome activated to foreground"
+        : "Chrome activation failed → CDP";
+    } else {
+      decisionReason = "Chrome not focused + keepMinimized → CDP";
     }
   } else {
     // macOS / Windows: handled by clickViaOsLevel itself; assume focused.
     useOsLevel = true;
+    decisionReason = `${process.platform}: assume foreground`;
   }
+  log(`clickAt decision: useOsLevel=${useOsLevel} (${decisionReason})`);
 
   await withDirectPageCdp("clickAt", timeout + 5000, async (pageWs, nextId) => {
     const cdpCall = <T = Record<string, unknown>>(method: string, params: Record<string, unknown> = {}): Promise<T> => {
@@ -1568,6 +1591,16 @@ async function handleClickAt(
       const screenPath = pagePath.map((p) =>
         pageToScreen(p.x, p.y, win, viewportH, dpr)
       );
+      const chromeBarHeight = Math.round(win.height - viewportH * dpr);
+      const clickPoint = screenPath[screenPath.length - 1];
+      const startPoint = screenPath[0];
+      log(
+        `clickAt coords: win=(${win.left},${win.top} ${win.width}x${win.height}) ` +
+          `viewport=${viewportW}x${viewportH} dpr=${dpr} chromeBar=${chromeBarHeight} | ` +
+          `page=(${Math.round(pageX)},${Math.round(pageY)}) → ` +
+          `screen=(${clickPoint.x},${clickPoint.y}) ` +
+          `path=${screenPath.length}pts starting at screen=(${startPoint.x},${startPoint.y})`,
+      );
 
       // Bounds-check the actual click target (last point of the bezier path)
       // against Chrome's content area in screen coords. A miss here means
@@ -1576,7 +1609,6 @@ async function handleClickAt(
       // Either way, firing xdotool at this coord would click whatever else
       // is on the user's desktop. Fail loudly so the cloud sees a typed
       // error instead of a silent miss + retry storm.
-      const clickPoint = screenPath[screenPath.length - 1];
       if (!isPointInPageArea(clickPoint.x, clickPoint.y, win, viewportH, dpr)) {
         throw new Error(
           `clickAt: computed screen point (${clickPoint.x}, ${clickPoint.y}) ` +
