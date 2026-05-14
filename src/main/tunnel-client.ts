@@ -1075,7 +1075,7 @@ function clickViaXdotool(
   args.push("click", String(buttonNum));
   for (const mod of xdotoolMods.slice().reverse()) args.push("keyup", mod);
 
-  return new Promise((resolve, reject) => {
+  return new Promise<void>((resolve, reject) => {
     const proc = spawn("xdotool", args, { stdio: ["ignore", "ignore", "pipe"] });
     let stderr = "";
     proc.stderr?.on("data", (d) => { stderr += d.toString(); });
@@ -1084,6 +1084,23 @@ function clickViaXdotool(
       if (code === 0) resolve();
       else reject(new Error(`xdotool click exit ${code}: ${stderr.trim()}`));
     });
+  }).then(async () => {
+    // Verify where the cursor actually landed. xdotool's screen-coord
+    // input and the X server's notion of pixels can diverge on HiDPI /
+    // scaled displays in ways that aren't obvious from CDP alone. Logging
+    // the post-click cursor + active window closes the loop: if these
+    // disagree with our computed target, the coord math is still off.
+    try {
+      const [loc, active] = await Promise.all([
+        runProcCapture("xdotool", ["getmouselocation"]).catch(() => ""),
+        runProcCapture("xdotool", ["getactivewindow", "getwindowname"]).catch(() => ""),
+      ]);
+      const target = path[path.length - 1];
+      log(
+        `xdotool post-click: target=(${Math.round(target.x)},${Math.round(target.y)}) ` +
+          `actual=${loc.trim() || "(unknown)"} activeWindow=${active.trim() || "(unknown)"}`,
+      );
+    } catch { /* best-effort logging */ }
   });
 }
 
