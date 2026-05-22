@@ -122,6 +122,16 @@ async function setChromeWindowState(
  */
 let sessionKeepMinimized = true;
 
+/**
+ * Where the cursor sits in viewport CSS pixels after the most recent
+ * click/move. Lets bezier paths start from the real last position instead
+ * of teleporting to a fresh random origin between actions — the teleport
+ * is a stronger bot fingerprint than a curved path alone fixes. Reset
+ * between Chrome sessions, since each new browser window starts the
+ * cursor at an unknown OS-cursor location anyway.
+ */
+let lastCursorPos: { x: number; y: number } | null = null;
+
 let reMinimizeTimer: NodeJS.Timeout | null = null;
 function reMinimize(cdpWsUrl: string): void {
   if (!sessionKeepMinimized) return;
@@ -236,6 +246,7 @@ async function handleStartSession(config: { startUrl?: string; headed?: boolean;
   try {
     setStatus("scraping");
     sessionKeepMinimized = config.keepMinimized ?? true;
+    lastCursorPos = null;
 
     // Stop any existing session
     if (currentChromeSession) {
@@ -1126,6 +1137,10 @@ async function handleMouseMove(
       }
     }
   });
+  if (steps.length > 0) {
+    const end = steps[steps.length - 1];
+    lastCursorPos = { x: end.x, y: end.y };
+  }
   log(`Moved mouse locally (${steps.length} points)`);
 }
 
@@ -1602,10 +1617,19 @@ async function handleClickElement(
     const targetX = box.x + paddingX + Math.random() * (box.width - 2 * paddingX);
     const targetY = box.y + paddingY + Math.random() * (box.height - 2 * paddingY);
 
-    // 5. Move mouse along natural bezier path
-    const fromX = 1280 * (0.2 + Math.random() * 0.6);
-    const fromY = 800 * (0.2 + Math.random() * 0.6);
+    // 5. Move mouse along natural bezier path.
+    // Start from the cursor's real last position so the path chains
+    // continuously between actions — a teleport-then-curve looks
+    // unmistakably scripted even when the curve itself is natural.
+    // Fall back to a random viewport point only when we don't yet know
+    // where the cursor sits (first action of a session).
+    const fromX = lastCursorPos?.x ?? 1280 * (0.2 + Math.random() * 0.6);
+    const fromY = lastCursorPos?.y ?? 800 * (0.2 + Math.random() * 0.6);
     const pagePath = computeBezierPath(fromX, fromY, targetX, targetY);
+    // Record the new position eagerly — even if the click path below
+    // throws, the cursor still moved, so the next action should chain
+    // from here rather than re-teleport.
+    lastCursorPos = { x: targetX, y: targetY };
 
     // Try OS-level click first so the browser window receives a real OS
     // mouse event and OS keyboard focus follows DOM focus. Falls back to
@@ -1843,9 +1867,14 @@ async function handleClickAt(
     const viewportH = layoutMetrics.cssLayoutViewport.clientHeight;
     const viewportW = layoutMetrics.cssLayoutViewport.clientWidth;
 
-    const fromX = viewportW * (0.2 + Math.random() * 0.6);
-    const fromY = viewportH * (0.2 + Math.random() * 0.6);
+    // Start the bezier from the cursor's real last position so the path
+    // chains between actions; fall back to a random viewport point only
+    // on the first action of a session. See handleClickElement for the
+    // full rationale.
+    const fromX = lastCursorPos?.x ?? viewportW * (0.2 + Math.random() * 0.6);
+    const fromY = lastCursorPos?.y ?? viewportH * (0.2 + Math.random() * 0.6);
     const pagePath = computeBezierPath(fromX, fromY, pageX, pageY);
+    lastCursorPos = { x: pageX, y: pageY };
 
     if (useOsLevel) {
       const { bounds } = await cdpCall<{
@@ -2214,6 +2243,7 @@ async function stopSession(): Promise<void> {
     await currentChromeSession.kill();
     currentChromeSession = null;
   }
+  lastCursorPos = null;
 }
 
 function handleMessage(rawData: WebSocket.RawData): void {
