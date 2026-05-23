@@ -12,6 +12,7 @@ import { launchChrome } from "./chrome-manager";
 import { createCdpBridge } from "./cdp-bridge";
 import type { AppConfig } from "./config";
 import type { ClientMessage, ServerMessage } from "./protocol";
+import { TunnelConnection } from "./tunnel-connection";
 
 // Keep in sync with package.json version
 const APP_VERSION = "0.4.0-beta.2";
@@ -159,20 +160,11 @@ interface TunnelClientEvents {
   onLog?: (message: string) => void;
 }
 
-let ws: WebSocket | null = null;
+let conn: TunnelConnection | null = null;
 let status: TunnelStatus = "disconnected";
-let reconnectTimer: NodeJS.Timeout | null = null;
-let reconnectAttempts = 0;
 let currentChromeSession: Awaited<ReturnType<typeof launchChrome>> | null = null;
 let currentCdpBridge: { close: () => void } | null = null;
 let events: TunnelClientEvents = {};
-let intentionalDisconnect = false;
-let lastPingReceived = 0;
-let pingWatchdog: NodeJS.Timeout | null = null;
-
-const MAX_RECONNECT_DELAY_MS = 30_000;
-const PING_WATCHDOG_INTERVAL_MS = 15_000;
-const PING_WATCHDOG_TIMEOUT_MS = 75_000;
 
 function log(message: string): void {
   events.onLog?.(`[Tunnel] ${message}`);
@@ -216,30 +208,10 @@ function setStatus(newStatus: TunnelStatus): void {
 }
 
 function send(msg: ClientMessage): void {
-  if (ws && ws.readyState === WebSocket.OPEN) {
-    if (msg.type !== "cdp" && msg.type !== "cdpBinary" && msg.type !== "pong") {
-      log(` ⬆ Sending: ${msg.type}${msg.type === "sessionError" ? ` (${(msg as { error: string }).error})` : ""}`);
-    }
-    ws.send(JSON.stringify(msg));
+  if (msg.type !== "cdp" && msg.type !== "cdpBinary" && msg.type !== "pong") {
+    log(` ⬆ Sending: ${msg.type}${msg.type === "sessionError" ? ` (${(msg as { error: string }).error})` : ""}`);
   }
-}
-
-function startPingWatchdog(): void {
-  stopPingWatchdog();
-  pingWatchdog = setInterval(() => {
-    if (lastPingReceived > 0 && Date.now() - lastPingReceived > PING_WATCHDOG_TIMEOUT_MS) {
-      log("Server ping timeout — connection appears stale, forcing reconnect");
-      stopPingWatchdog();
-      ws?.terminate();
-    }
-  }, PING_WATCHDOG_INTERVAL_MS);
-}
-
-function stopPingWatchdog(): void {
-  if (pingWatchdog) {
-    clearInterval(pingWatchdog);
-    pingWatchdog = null;
-  }
+  conn?.send(msg);
 }
 
 async function handleStartSession(config: { startUrl?: string; headed?: boolean; keepMinimized?: boolean }): Promise<void> {
@@ -266,7 +238,7 @@ async function handleStartSession(config: { startUrl?: string; headed?: boolean;
     const sessionCdpUrl = currentChromeSession.cdpWsUrl;
     currentCdpBridge = await createCdpBridge({
       cdpWsUrl: sessionCdpUrl,
-      tunnelWs: ws!,
+      tunnelWs: conn!.rawSocket,
       onNewTarget: () => reMinimize(sessionCdpUrl),
     });
 
@@ -347,7 +319,7 @@ async function reloadAllPages(browserCdpWsUrl: string): Promise<void> {
 }
 
 async function handleReleaseCdp(): Promise<void> {
-  if (!currentCdpBridge || !currentChromeSession || !ws) return;
+  if (!currentCdpBridge || !currentChromeSession || !conn?.isOpen) return;
 
   // Skip everything when a stopSession is already queued behind us. The
   // restore + reconnect + page reload would all get torn down again in
@@ -369,7 +341,7 @@ async function handleReleaseCdp(): Promise<void> {
   // means "session was torn down, nothing to release" is a graceful exit
   // instead of two ERROR log lines on the normal shutdown sequence.
   const session = currentChromeSession;
-  const tunnelWs = ws;
+  const tunnelWs = conn.rawSocket;
 
   log("Releasing CDP bridge (resetting session state)...");
   currentCdpBridge.close();
@@ -2246,36 +2218,12 @@ async function stopSession(): Promise<void> {
   lastCursorPos = null;
 }
 
-function handleMessage(rawData: WebSocket.RawData): void {
-  let msg: ServerMessage;
-  try {
-    msg = JSON.parse(rawData.toString());
-  } catch (err) {
-    log(`Invalid message from server: ${err instanceof Error ? err.message : String(err)}`);
-    return;
-  }
-
-  // Log all non-CDP messages received from server
-  if (msg.type !== "cdp" && msg.type !== "cdpBinary" && msg.type !== "ping") {
+function handleMessage(msg: ServerMessage): void {
+  if (msg.type !== "cdp" && msg.type !== "cdpBinary") {
     log(` ⬇ Received: ${msg.type}`);
   }
 
   switch (msg.type) {
-    case "authOk":
-      setStatus("connected");
-      reconnectAttempts = 0;
-      lastPingReceived = Date.now();
-      startPingWatchdog();
-      log(`   Profile ID: ${msg.profileId}`);
-      break;
-
-    case "authFail":
-      log(`ERROR:   Auth failed: ${msg.error}`);
-      events.onError?.(msg.error);
-      // Don't reconnect on auth failure
-      ws?.close();
-      break;
-
     case "startSession":
       log(`   Config: headed=${msg.config.headed ?? true}, startUrl=${msg.config.startUrl || "(none)"}`);
       enqueueLifecycle("startSession", () => handleStartSession(msg.config));
@@ -2380,11 +2328,6 @@ function handleMessage(rawData: WebSocket.RawData): void {
       });
       break;
 
-    case "ping":
-      lastPingReceived = Date.now();
-      send({ type: "pong" });
-      break;
-
     case "cdp":
     case "cdpBinary":
       // These are handled by the CDP bridge listener
@@ -2397,7 +2340,6 @@ function handleMessage(rawData: WebSocket.RawData): void {
 
 export function connect(config: AppConfig, eventHandlers?: TunnelClientEvents): void {
   events = eventHandlers || {};
-  intentionalDisconnect = false;
 
   if (!config.serverUrl || !config.apiToken) {
     log("ERROR:Server URL and API token are required");
@@ -2405,76 +2347,30 @@ export function connect(config: AppConfig, eventHandlers?: TunnelClientEvents): 
     return;
   }
 
-  if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
-    log("Already connected/connecting");
-    return;
+  if (!conn) {
+    conn = new TunnelConnection({
+      serverUrl: config.serverUrl,
+      auth: { token: config.apiToken, version: APP_VERSION },
+      autoReconnect: config.autoReconnect,
+      log,
+      onStatusChange: (s) => setStatus(s),
+      onAuthOk: (msg) => log(`   Profile ID: ${msg.profileId}`),
+      onMessage: (msg) => handleMessage(msg as ServerMessage),
+      onDisconnect: ({ code, reason }) => {
+        stopSession().catch(() => {});
+        // Hard auth failure — surface to the UI so the user knows their
+        // token is wrong rather than seeing endless reconnect attempts.
+        if (code === 4004) events.onError?.(reason || "Invalid device key");
+      },
+    });
   }
 
-  setStatus("connecting");
-  log(` Connecting to ${config.serverUrl}...`);
-
-  ws = new WebSocket(config.serverUrl);
-
-  ws.on("open", () => {
-    setStatus("authenticating");
-    send({
-      type: "auth",
-      token: config.apiToken,
-      version: APP_VERSION,
-    });
-  });
-
-  ws.on("message", handleMessage);
-
-  ws.on("close", (code, reason) => {
-    const wasConnected = status === "connected" || status === "scraping";
-    setStatus("disconnected");
-    stopPingWatchdog();
-
-    // Stop any active session
-    stopSession().catch(() => {});
-
-    log(` Disconnected (code ${code}: ${reason.toString()})`);
-
-    // Don't reconnect on auth failure, intentional close, or user-initiated disconnect
-    if (code === 4004 || intentionalDisconnect) {
-      intentionalDisconnect = false;
-      return;
-    }
-
-    // Don't reconnect if disabled in config
-    if (!config.autoReconnect) return;
-
-    // Reconnect with exponential backoff
-    const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), MAX_RECONNECT_DELAY_MS);
-    reconnectAttempts++;
-    setStatus("reconnecting");
-    log(` Reconnecting in ${delay}ms (attempt ${reconnectAttempts})...`);
-    reconnectTimer = setTimeout(() => connect(config, eventHandlers), delay);
-  });
-
-  ws.on("error", (err) => {
-    log(`ERROR: WebSocket error: ${err.message}`);
-  });
+  conn.connect();
 }
 
 export function disconnect(): void {
-  intentionalDisconnect = true;
-  if (reconnectTimer) {
-    clearTimeout(reconnectTimer);
-    reconnectTimer = null;
-  }
-  reconnectAttempts = 0;
-
+  conn?.disconnect();
   stopSession().catch(() => {});
-
-  if (ws) {
-    ws.removeAllListeners();
-    ws.terminate();
-    ws = null;
-  }
-
-  setStatus("disconnected");
 }
 
 export function getStatus(): TunnelStatus {
