@@ -85,6 +85,24 @@ export interface TunnelTypeText {
   charDelayMs: number;
   /** If true, press Enter after typing (or just Enter if text is empty) — also OS-level. */
   submitAfter?: boolean;
+  /**
+   * If set, send a `typeTextResponse` with the same id once the OS-level
+   * typing (and optional Enter) has actually finished. Older cloud servers
+   * don't set this; new clients send the ack whenever it's present.
+   */
+  requestId?: string;
+}
+
+/**
+ * Client → Server: ack for `typeText`. Sent only when the typeText included
+ * a `requestId`. `success: false` means OS-level injection failed (and the
+ * CDP fallback also failed if attempted).
+ */
+export interface TunnelTypeTextResponse {
+  type: "typeTextResponse";
+  requestId: string;
+  success: boolean;
+  error?: string;
 }
 
 /** Server → Client: clear the focused input via OS-level select-all + delete. */
@@ -283,6 +301,7 @@ export type ClientMessage =
   | TunnelClickElementResponse
   | TunnelClickAtResponse
   | TunnelScrollRevealLazyContentResponse
+  | TunnelTypeTextResponse
   | TunnelCdpMessage
   | TunnelCdpBinary
   | TunnelPong;

@@ -888,7 +888,7 @@ async function pressEnterOsLevel(): Promise<void> {
  *
  * If submitAfter is true, presses Enter at the end (also via OS-level).
  */
-async function handleTypeText(text: string, charDelayMs: number, submitAfter = false): Promise<void> {
+async function handleTypeText(text: string, charDelayMs: number, submitAfter = false, requestId?: string): Promise<void> {
   const platform = process.platform;
   let osMethod: string | null = null;
   let osTyper: ((t: string, d: number) => Promise<void>) | null = null;
@@ -914,6 +914,7 @@ async function handleTypeText(text: string, charDelayMs: number, submitAfter = f
         await pressEnterOsLevel();
       }
       log(`Typed ${text.length} chars via ${osMethod}${submitAfter ? " + Enter" : ""} (${charDelayMs}ms/char)`);
+      if (requestId) send({ type: "typeTextResponse", requestId, success: true });
       return;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -954,6 +955,7 @@ async function handleTypeText(text: string, charDelayMs: number, submitAfter = f
     }
   });
   log(`Typed ${text.length} chars locally via CDP${submitAfter ? " + Enter" : ""} (${charDelayMs}ms/char)`);
+  if (requestId) send({ type: "typeTextResponse", requestId, success: true });
 }
 
 /**
@@ -2245,8 +2247,10 @@ function handleMessage(msg: ServerMessage): void {
       break;
 
     case "typeText":
-      handleTypeText(msg.text, msg.charDelayMs, msg.submitAfter ?? false).catch((err) => {
-        log(`ERROR: typeText failed: ${err instanceof Error ? err.message : String(err)}`);
+      handleTypeText(msg.text, msg.charDelayMs, msg.submitAfter ?? false, msg.requestId).catch((err) => {
+        const error = err instanceof Error ? err.message : String(err);
+        log(`ERROR: typeText failed: ${error}`);
+        if (msg.requestId) send({ type: "typeTextResponse", requestId: msg.requestId, success: false, error });
       });
       break;
 
