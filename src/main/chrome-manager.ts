@@ -140,6 +140,7 @@ export async function launchChrome(options: {
   chromePath?: string;
   headed?: boolean;
   userDataDir?: string;
+  windowSize?: { width: number; height: number };
 }): Promise<ChromeSession> {
   const chromePath = options.chromePath || findChromePath();
   if (!chromePath) {
@@ -220,6 +221,10 @@ export async function launchChrome(options: {
     "--webrtc-ip-handling-policy=disable_non_proxied_udp",
     "--enforce-webrtc-ip-permission-check",
   ];
+
+  if (options.windowSize) {
+    args.push(`--window-size=${options.windowSize.width},${options.windowSize.height}`);
+  }
 
   if (options.headed === false) {
     args.push("--headless=new");

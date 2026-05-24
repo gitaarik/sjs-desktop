@@ -230,6 +230,10 @@ async function handleStartSession(config: { startUrl?: string; headed?: boolean;
     log("Launching Chrome...");
     currentChromeSession = await launchChrome({
       headed: config.headed ?? true,
+      // Pin a stable window size so the CSS viewport (and screen-pixel
+      // fingerprint) doesn't vary with whatever the user's WM happened to
+      // restore. Common laptop size = unremarkable fingerprint.
+      windowSize: { width: 1280, height: 800 },
     });
     resetChromeWindowIdCache();
 
@@ -537,8 +541,30 @@ async function getChromeWindowIdsLinux(): Promise<string[]> {
     const out = await runProcCapture("xdotool", [
       "search", "--pid", String(pid),
     ]);
-    const ids = out.trim().split(/\s+/).filter(Boolean);
-    if (ids.length > 0) cachedChromeWindowIds = ids;
+    const allIds = out.trim().split(/\s+/).filter(Boolean);
+    if (allIds.length === 0) return [];
+
+    // Filter to the main browser window(s): drop DevTools, extension popups,
+    // and tiny widget windows. Without this, `activateChromeWindowLinux`
+    // picks `chromeIds[0]` which is whichever xdotool returned first — often
+    // a DevTools window when the user has DevTools open, and then xdotool
+    // input goes to DevTools instead of the page.
+    const mainIds: string[] = [];
+    for (const id of allIds) {
+      try {
+        const name = (await runProcCapture("xdotool", ["getwindowname", id])).trim();
+        if (!name || name === "Chrome" || name.includes("DevTools") || name.startsWith("chrome-extension://")) continue;
+        const geom = await runProcCapture("xdotool", ["getwindowgeometry", id]);
+        const m = geom.match(/Geometry: (\d+)x(\d+)/);
+        if (m && (parseInt(m[1], 10) <= 200 || parseInt(m[2], 10) <= 200)) continue;
+        mainIds.push(id);
+      } catch { /* skip unreadable window */ }
+    }
+
+    // If the filter killed everything (unexpected — e.g. xdotool getwindowname
+    // failed for the only window), fall back to all IDs rather than break.
+    const ids = mainIds.length > 0 ? mainIds : allIds;
+    cachedChromeWindowIds = ids;
     return ids;
   } catch {
     return [];
@@ -959,68 +985,51 @@ async function handleTypeText(text: string, charDelayMs: number, submitAfter = f
 }
 
 /**
- * Capture a screenshot via a direct browser-level CDP connection.
- * Connects to Chrome's browser WebSocket (separate from Playwright's),
- * finds the most recently created page target, attaches to it, takes
- * a screenshot, and detaches. Since this is a completely separate
- * connection, Playwright never sees the attach/detach events.
+ * One attempt at the browser-level CDP screenshot flow: connect, find a
+ * page target, attach, captureScreenshot, detach. Returns the base64 data
+ * on success, null on any failure (timeout, websocket error, no target,
+ * empty data). Caller retries.
  */
-async function handleScreenshotRequest(requestId: string, format: string, quality: number): Promise<void> {
-  if (!currentChromeSession) {
-    send({ type: "screenshotResponse", requestId, data: null });
-    return;
-  }
-
-  const cdpWsUrl = currentChromeSession.cdpWsUrl;
-
-  // Connect to browser-level CDP to find targets and capture screenshot.
-  // This is a separate connection from Playwright's, so it won't interfere.
-  await new Promise<void>((resolve) => {
+function captureScreenshotOnce(
+  cdpWsUrl: string,
+  format: string,
+  quality: number,
+): Promise<string | null> {
+  return new Promise<string | null>((resolve) => {
     const browserWs = new WebSocket(cdpWsUrl);
-    const timeout = setTimeout(() => {
-      send({ type: "screenshotResponse", requestId, data: null });
+    let done = false;
+    const finish = (data: string | null) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timeout);
       browserWs.close();
-      resolve();
-    }, 5000);
+      resolve(data);
+    };
+    const timeout = setTimeout(() => finish(null), 5000);
     let msgId = 1;
     let cdpSessionId = "";
 
     browserWs.on("open", () => {
-      // Step 1: Get all targets to find the right page
-      browserWs.send(JSON.stringify({
-        id: msgId++,
-        method: "Target.getTargets",
-      }));
+      browserWs.send(JSON.stringify({ id: msgId++, method: "Target.getTargets" }));
     });
 
     browserWs.on("message", (raw: WebSocket.RawData) => {
       try {
         const msg = JSON.parse(raw.toString());
 
-        // Step 2: Got targets — find best page and attach
         if (msg.id === 1 && msg.result?.targetInfos) {
           const pages = (msg.result.targetInfos as { targetId: string; type: string; url: string }[])
             .filter((t) => t.type === "page" && !t.url.startsWith("chrome://") && t.url !== "about:blank");
-
-          // Pick the last page in the list — that's typically the most recently
-          // created/navigated one. If only one page exists, it's the main one.
           const target = pages[pages.length - 1] || pages[0];
-          if (!target) {
-            clearTimeout(timeout);
-            send({ type: "screenshotResponse", requestId, data: null });
-            browserWs.close();
-            resolve();
-            return;
-          }
-
+          if (!target) return finish(null);
           browserWs.send(JSON.stringify({
             id: msgId++,
             method: "Target.attachToTarget",
             params: { targetId: target.targetId, flatten: true },
           }));
+          return;
         }
 
-        // Step 3: Got attach response — capture screenshot
         if (msg.id === 2 && msg.result?.sessionId) {
           cdpSessionId = msg.result.sessionId;
           browserWs.send(JSON.stringify({
@@ -1029,13 +1038,11 @@ async function handleScreenshotRequest(requestId: string, format: string, qualit
             sessionId: cdpSessionId,
             params: { format, quality },
           }));
+          return;
         }
 
-        // Step 4: Got screenshot — send response, detach, close
         if (msg.id === 3) {
           const data = msg.result?.data || null;
-          send({ type: "screenshotResponse", requestId, data });
-
           if (cdpSessionId) {
             browserWs.send(JSON.stringify({
               id: msgId++,
@@ -1043,22 +1050,47 @@ async function handleScreenshotRequest(requestId: string, format: string, qualit
               params: { sessionId: cdpSessionId },
             }));
           }
-
-          clearTimeout(timeout);
-          browserWs.close();
-          resolve();
+          finish(data);
         }
       } catch (err) {
-          log(`Screenshot CDP parse error: ${err instanceof Error ? err.message : String(err)}`);
-        }
+        log(`Screenshot CDP parse error: ${err instanceof Error ? err.message : String(err)}`);
+      }
     });
 
-    browserWs.on("error", () => {
-      clearTimeout(timeout);
-      send({ type: "screenshotResponse", requestId, data: null });
-      resolve();
-    });
+    browserWs.on("error", () => finish(null));
   });
+}
+
+/**
+ * Capture a screenshot via a direct browser-level CDP connection.
+ * Connects to Chrome's browser WebSocket (separate from Playwright's),
+ * finds the most recently created page target, attaches to it, takes
+ * a screenshot, and detaches. Since this is a completely separate
+ * connection, Playwright never sees the attach/detach events.
+ *
+ * Retries up to 3 times on transient failures (websocket blips, CDP timeouts).
+ * Without the retry, a single tunnel-side hiccup made the scraper lose a
+ * frame and downstream code had to handle null data — now we give it a
+ * couple of chances before giving up.
+ */
+async function handleScreenshotRequest(requestId: string, format: string, quality: number): Promise<void> {
+  if (!currentChromeSession) {
+    send({ type: "screenshotResponse", requestId, data: null });
+    return;
+  }
+
+  const cdpWsUrl = currentChromeSession.cdpWsUrl;
+  const MAX_ATTEMPTS = 3;
+  let data: string | null = null;
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    data = await captureScreenshotOnce(cdpWsUrl, format, quality);
+    if (data) break;
+    if (attempt < MAX_ATTEMPTS) {
+      log(`Screenshot attempt ${attempt}/${MAX_ATTEMPTS} returned no data, retrying...`);
+      await new Promise((r) => setTimeout(r, 300));
+    }
+  }
+  send({ type: "screenshotResponse", requestId, data });
 }
 
 /**
