@@ -121,8 +121,16 @@ jobs:
         working-directory: src/ui
         run: npm run build
 
-      # Build Tauri app and create GitHub Release
-      - uses: tauri-apps/tauri-action@v0
+      # Build Tauri app and create GitHub Release.
+      #
+      # Wrapped in Wandalen/wretry.action because tauri-action hits a known
+      # race when several platform jobs upload latest.json to the same
+      # release in parallel: one job's "update existing asset" call returns
+      # 404 because another job just deleted+recreated the asset between
+      # our id-lookup and our update. v0.4.2 release: Windows failed exactly
+      # there, even though the MSI + NSIS + sigs uploaded fine just before.
+      # 3 attempts × 30s delay covers the worst-case race window.
+      - uses: Wandalen/wretry.action@v3
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Updater signing key (generate with: npx tauri signer generate)
@@ -136,38 +144,42 @@ jobs:
           # APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           # APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         with:
-          projectPath: .
-          tagName: v__VERSION__
-          releaseName: "Smart Job Seeker v__VERSION__"
-          releaseBody: |
-            ## Download
+          action: tauri-apps/tauri-action@v0
+          attempt_limit: 3
+          attempt_delay: 30000
+          with: |
+            projectPath: .
+            tagName: v__VERSION__
+            releaseName: "Smart Job Seeker v__VERSION__"
+            releaseBody: |
+              ## Download
 
-            Pick the installer for your platform:
+              Pick the installer for your platform:
 
-            - **macOS (Apple Silicon)** — `.dmg` file (aarch64)
-            - **macOS (Intel)** — `.dmg` file (x64)
-            - **Windows** — `.msi` or `.exe` installer
-            - **Linux** — `.AppImage` (universal) or `.deb` (Debian/Ubuntu)
+              - **macOS (Apple Silicon)** — `.dmg` file (aarch64)
+              - **macOS (Intel)** — `.dmg` file (x64)
+              - **Windows** — `.msi` or `.exe` installer
+              - **Linux** — `.AppImage` (universal) or `.deb` (Debian/Ubuntu)
 
-            ## First launch
+              ## First launch
 
-            The app downloads Chrome for Testing (~175MB) on first launch. This is a one-time download.
+              The app downloads Chrome for Testing (~175MB) on first launch. This is a one-time download.
 
-            ## Platform notes
+              ## Platform notes
 
-            **macOS**: If you see "unidentified developer", right-click the app and choose **Open**, then click **Open** again in the dialog.
+              **macOS**: If you see "unidentified developer", right-click the app and choose **Open**, then click **Open** again in the dialog.
 
-            **Windows**: If SmartScreen shows a warning, click **More info** then **Run anyway**.
+              **Windows**: If SmartScreen shows a warning, click **More info** then **Run anyway**.
 
-            ## Build from source
+              ## Build from source
 
-            See [BUILD.md](https://github.com/gitaarik/sjs-desktop/blob/main/BUILD.md) for instructions.
-          releaseDraft: false
-          prerelease: ${{ needs.check-version.outputs.is_prerelease == 'true' }}
-          # MSI doesn't support semver pre-release identifiers (e.g. -beta.1), so skip it for prereleases
-          args: >-
-            ${{ matrix.rust_target && format('--target {0}', matrix.rust_target) || '' }}
-            ${{ needs.check-version.outputs.is_prerelease == 'true' && matrix.platform == 'windows-latest' && '--bundles nsis' || '' }}
+              See [BUILD.md](https://github.com/gitaarik/sjs-desktop/blob/main/BUILD.md) for instructions.
+            releaseDraft: false
+            prerelease: ${{ needs.check-version.outputs.is_prerelease == 'true' }}
+            # MSI doesn't support semver pre-release identifiers (e.g. -beta.1), so skip it for prereleases
+            args: >-
+              ${{ matrix.rust_target && format('--target {0}', matrix.rust_target) || '' }}
+              ${{ needs.check-version.outputs.is_prerelease == 'true' && matrix.platform == 'windows-latest' && '--bundles nsis' || '' }}
 
   # For beta releases: copy latest.json to the pinned beta-latest release
   # so the beta update channel always has a stable endpoint
