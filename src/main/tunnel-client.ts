@@ -8,6 +8,7 @@
 import WebSocket from "ws";
 import http from "http";
 import { spawn } from "child_process";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { launchChrome } from "./chrome-manager";
 import { createCdpBridge } from "./cdp-bridge";
 import type { AppConfig } from "./config";
@@ -166,8 +167,60 @@ let currentChromeSession: Awaited<ReturnType<typeof launchChrome>> | null = null
 let currentCdpBridge: { close: () => void } | null = null;
 let events: TunnelClientEvents = {};
 
+// ============================================================================
+// Cloud log forwarding
+// ============================================================================
+// The tunnel-client's `log()` writes to a local file via `events.onLog`. Each
+// call is also fire-and-forwarded over the WS as a `clientLog` message so the
+// cloud can interleave tunnel and scraper logs in the run dashboard. Filter
+// rules (info/warn/error always; debug only when verbose) match the cloud's
+// expectation. Forwarding is fully best-effort — disconnect drops lines, no
+// queue or buffer, so the local file remains the source of truth for full
+// per-device history.
+
+const stepContext = new AsyncLocalStorage<{ stepId: number | undefined }>();
+let logForwardingVerbose = false;
+
+/** Redact potentially sensitive substrings from a forwarded log message. */
+function redactForCloud(message: string): string {
+  // Strip query strings from URLs — they can contain tokens, search terms, or
+  // user identifiers that don't need to leave the device.
+  return message.replace(/(https?:\/\/[^\s?]+)\?[^\s]*/g, "$1");
+}
+
+/**
+ * Forward a log line to the cloud over the WS. Filtered by level + the
+ * verbose flag set by the server's `logConfig` message. Errors swallowed —
+ * forwarding must never affect tunnel operation.
+ */
+function forwardLog(level: "debug" | "info" | "warn" | "error", message: string): void {
+  if (level === "debug" && !logForwardingVerbose) return;
+  if (!conn) return;
+  try {
+    conn.send({
+      type: "clientLog",
+      level,
+      message: redactForCloud(message),
+      ts: Date.now(),
+      stepId: stepContext.getStore()?.stepId,
+    });
+  } catch {
+    // Best-effort.
+  }
+}
+
 function log(message: string): void {
   events.onLog?.(`[Tunnel] ${message}`);
+  forwardLog("info", message);
+}
+
+/** Run `fn` inside an ALS context that carries the active stepId for any
+ *  log() calls made during command handling. The command's `stepId` field
+ *  (if present) is what cloud's `step()` was in at the moment it issued the
+ *  command — propagating it back lets cloud+tunnel logs share the same step
+ *  subtree in the debug view. */
+function withStep<T>(stepId: number | undefined, fn: () => Promise<T>): Promise<T> {
+  return stepContext.run({ stepId }, fn);
 }
 
 /**
@@ -2250,6 +2303,9 @@ async function stopSession(): Promise<void> {
     currentChromeSession = null;
   }
   lastCursorPos = null;
+  // Reset cloud log-forwarding to safe defaults — the next session's
+  // logConfig will refresh this if needed.
+  logForwardingVerbose = false;
 }
 
 function handleMessage(msg: ServerMessage): void {
@@ -2279,7 +2335,9 @@ function handleMessage(msg: ServerMessage): void {
       break;
 
     case "typeText":
-      handleTypeText(msg.text, msg.charDelayMs, msg.submitAfter ?? false, msg.requestId).catch((err) => {
+      withStep(msg.stepId, () =>
+        handleTypeText(msg.text, msg.charDelayMs, msg.submitAfter ?? false, msg.requestId),
+      ).catch((err) => {
         const error = err instanceof Error ? err.message : String(err);
         log(`ERROR: typeText failed: ${error}`);
         if (msg.requestId) send({ type: "typeTextResponse", requestId: msg.requestId, success: false, error });
@@ -2287,32 +2345,36 @@ function handleMessage(msg: ServerMessage): void {
       break;
 
     case "clearInput":
-      handleClearInput().catch((err) => {
+      withStep(msg.stepId, () => handleClearInput()).catch((err) => {
         log(`ERROR: clearInput failed: ${err instanceof Error ? err.message : String(err)}`);
       });
       break;
 
     case "scrollWheel":
-      handleScrollWheel(msg.mouseX, msg.mouseY, msg.steps).catch((err) => {
+      withStep(msg.stepId, () => handleScrollWheel(msg.mouseX, msg.mouseY, msg.steps)).catch((err) => {
         log(`ERROR: scrollWheel failed: ${err instanceof Error ? err.message : String(err)}`);
       });
       break;
 
     case "mouseMove":
-      handleMouseMove(msg.steps).catch((err) => {
+      withStep(msg.stepId, () => handleMouseMove(msg.steps)).catch((err) => {
         log(`ERROR: mouseMove failed: ${err instanceof Error ? err.message : String(err)}`);
       });
       break;
 
     case "screenshotRequest":
-      handleScreenshotRequest(msg.requestId, msg.format || "jpeg", msg.quality ?? 50).catch((err) => {
+      withStep(msg.stepId, () =>
+        handleScreenshotRequest(msg.requestId, msg.format || "jpeg", msg.quality ?? 50),
+      ).catch((err) => {
         log(`ERROR: screenshot failed: ${err instanceof Error ? err.message : String(err)}`);
         send({ type: "screenshotResponse", requestId: msg.requestId, data: null });
       });
       break;
 
     case "clickElement":
-      handleClickElement(msg.requestId, msg.selector, msg.timeout, msg.modifiers, msg.button).catch((err) => {
+      withStep(msg.stepId, () =>
+        handleClickElement(msg.requestId, msg.selector, msg.timeout, msg.modifiers, msg.button),
+      ).catch((err) => {
         const error = err instanceof Error ? err.message : String(err);
         log(`ERROR: clickElement failed: ${error}`);
         send({ type: "clickElementResponse", requestId: msg.requestId, success: false, error });
@@ -2320,7 +2382,9 @@ function handleMessage(msg: ServerMessage): void {
       break;
 
     case "clickAt":
-      handleClickAt(msg.requestId, msg.x, msg.y, msg.timeout, msg.modifiers, msg.button).catch((err) => {
+      withStep(msg.stepId, () =>
+        handleClickAt(msg.requestId, msg.x, msg.y, msg.timeout, msg.modifiers, msg.button),
+      ).catch((err) => {
         const error = err instanceof Error ? err.message : String(err);
         log(`ERROR: clickAt failed: ${error}`);
         send({ type: "clickAtResponse", requestId: msg.requestId, success: false, error });
@@ -2328,11 +2392,20 @@ function handleMessage(msg: ServerMessage): void {
       break;
 
     case "scrollRevealLazyContent":
-      handleScrollRevealLazyContent(msg.requestId, msg.viewport, msg.maxRounds, msg.noChangeLimit).catch((err) => {
+      withStep(msg.stepId, () =>
+        handleScrollRevealLazyContent(msg.requestId, msg.viewport, msg.maxRounds, msg.noChangeLimit),
+      ).catch((err) => {
         const error = err instanceof Error ? err.message : String(err);
         log(`ERROR: scrollRevealLazyContent failed: ${error}`);
         send({ type: "scrollRevealLazyContentResponse", requestId: msg.requestId, success: false, totalScrollSteps: 0, finalHeight: 0, error });
       });
+      break;
+
+    case "logConfig":
+      // Server is opening a scrape — switch on debug forwarding if it asked
+      // for verbose logs; otherwise we still forward info+ levels by default.
+      logForwardingVerbose = !!msg.verbose;
+      log(`Log forwarding: ${logForwardingVerbose ? "verbose (debug+)" : "info+"} (run ${msg.runId ?? "(none)"})`);
       break;
 
     case "setMinimized":
