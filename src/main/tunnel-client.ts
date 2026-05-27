@@ -180,6 +180,13 @@ let events: TunnelClientEvents = {};
 
 const stepContext = new AsyncLocalStorage<{ stepId: number | undefined }>();
 let logForwardingVerbose = false;
+// Guards forwardLog so it never sends ahead of the `auth` message. The
+// tunnel server hard-closes any connection whose first frame isn't `auth`
+// (code 4003), so a stray clientLog emitted during setStatus("authenticating")
+// — which fires *between* socket open and the actual auth send — would
+// crash the entire connection. Flipped true in `connect()`'s onAuthOk
+// wiring, reset false in onDisconnect.
+let cloudLogsEnabled = false;
 
 /** Redact potentially sensitive substrings from a forwarded log message. */
 function redactForCloud(message: string): string {
@@ -195,7 +202,7 @@ function redactForCloud(message: string): string {
  */
 function forwardLog(level: "debug" | "info" | "warn" | "error", message: string): void {
   if (level === "debug" && !logForwardingVerbose) return;
-  if (!conn) return;
+  if (!cloudLogsEnabled || !conn) return;
   try {
     conn.send({
       type: "clientLog",
@@ -2463,9 +2470,13 @@ export function connect(config: AppConfig, eventHandlers?: TunnelClientEvents): 
       autoReconnect: config.autoReconnect,
       log,
       onStatusChange: (s) => setStatus(s),
-      onAuthOk: (msg) => log(`   Profile ID: ${msg.profileId}`),
+      onAuthOk: (msg) => {
+        cloudLogsEnabled = true;
+        log(`   Profile ID: ${msg.profileId}`);
+      },
       onMessage: (msg) => handleMessage(msg as ServerMessage),
       onDisconnect: ({ code, reason }) => {
+        cloudLogsEnabled = false;
         stopSession().catch(() => {});
         // Hard auth failure — surface to the UI so the user knows their
         // token is wrong rather than seeing endless reconnect attempts.
