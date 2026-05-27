@@ -221,6 +221,17 @@ function log(message: string): void {
   forwardLog("info", message);
 }
 
+/**
+ * Same as log() locally, but forwards at debug-level instead of info. Used
+ * for high-volume operational traces (WS envelope `↑ Sending` / `↓ Received`,
+ * heartbeat acks) that flood the run dashboard at info level. Local file
+ * keeps them full-fidelity for per-device debugging.
+ */
+function logTrace(message: string): void {
+  events.onLog?.(`[Tunnel] ${message}`);
+  forwardLog("debug", message);
+}
+
 /** Run `fn` inside an ALS context that carries the active stepId for any
  *  log() calls made during command handling. The command's `stepId` field
  *  (if present) is what cloud's `step()` was in at the moment it issued the
@@ -269,7 +280,7 @@ function setStatus(newStatus: TunnelStatus): void {
 
 function send(msg: ClientMessage): void {
   if (msg.type !== "cdp" && msg.type !== "cdpBinary" && msg.type !== "pong") {
-    log(` ⬆ Sending: ${msg.type}${msg.type === "sessionError" ? ` (${(msg as { error: string }).error})` : ""}`);
+    logTrace(` ⬆ Sending: ${msg.type}${msg.type === "sessionError" ? ` (${(msg as { error: string }).error})` : ""}`);
   }
   conn?.send(msg);
 }
@@ -2317,7 +2328,7 @@ async function stopSession(): Promise<void> {
 
 function handleMessage(msg: ServerMessage): void {
   if (msg.type !== "cdp" && msg.type !== "cdpBinary") {
-    log(` ⬇ Received: ${msg.type}`);
+    logTrace(` ⬇ Received: ${msg.type}`);
   }
 
   switch (msg.type) {
