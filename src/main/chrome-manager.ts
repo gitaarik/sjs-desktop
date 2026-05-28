@@ -140,6 +140,12 @@ export async function launchChrome(options: {
   chromePath?: string;
   headed?: boolean;
   userDataDir?: string;
+  /**
+   * Stable per-credential key (e.g. "profile-42"). When set, Chrome gets a
+   * dedicated user-data dir under ~/.sjs/chrome-profiles/<key> so each account
+   * keeps its own cookies / remember-me state. Ignored when userDataDir is set.
+   */
+  profileKey?: string;
   windowSize?: { width: number; height: number };
 }): Promise<ChromeSession> {
   const chromePath = options.chromePath || findChromePath();
@@ -152,8 +158,20 @@ export async function launchChrome(options: {
   const port = await getFreePort();
   // Use a persistent user data dir so Chrome retains cookies, history, and
   // local storage across sessions. A fresh profile each time looks suspicious
-  // to anti-bot systems like Cloudflare (zero-history fingerprint).
-  const userDataDir = options.userDataDir || path.join(os.homedir(), ".sjs", "chrome-user-data");
+  // to anti-bot systems like Cloudflare (zero-history fingerprint), and losing
+  // the platform session cookie forces a re-login (and a "new device" email)
+  // on every run.
+  //
+  // Each platform credential gets its OWN profile dir (keyed by profileKey) so
+  // accounts don't share one cookie jar: logging into account B no longer
+  // clobbers account A's session, and each account keeps its own remember-me
+  // cookie. Falls back to the legacy shared dir when no key is supplied (e.g.
+  // the debug Chrome, or older servers that don't send a profile id).
+  const safeKey = options.profileKey?.replace(/[^a-zA-Z0-9_-]/g, "") || "";
+  const userDataDir = options.userDataDir
+    || (safeKey
+      ? path.join(os.homedir(), ".sjs", "chrome-profiles", safeKey)
+      : path.join(os.homedir(), ".sjs", "chrome-user-data"));
 
   // Ensure the user data dir and Default profile exist
   const defaultProfileDir = path.join(userDataDir, "Default");

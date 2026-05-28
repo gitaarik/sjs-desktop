@@ -86,6 +86,14 @@ export interface TunnelStartSession {
     startUrl?: string;
     headed?: boolean;
     keepMinimized?: boolean;
+    /**
+     * Platform-profile id (one set of credentials). The client uses it to
+     * pick a per-credential Chrome user-data dir so each account keeps its
+     * own cookies / remember-me state instead of sharing one profile.
+     * Optional for back-compat with older clients (they ignore it and fall
+     * back to the shared profile dir).
+     */
+    profileId?: number;
   };
 }
 

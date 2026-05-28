@@ -300,7 +300,7 @@ function send(msg: ClientMessage): void {
   conn?.send(msg);
 }
 
-async function handleStartSession(config: { startUrl?: string; headed?: boolean; keepMinimized?: boolean }): Promise<void> {
+async function handleStartSession(config: { startUrl?: string; headed?: boolean; keepMinimized?: boolean; profileId?: number }): Promise<void> {
   try {
     setStatus("scraping");
     sessionKeepMinimized = config.keepMinimized ?? true;
@@ -316,6 +316,11 @@ async function handleStartSession(config: { startUrl?: string; headed?: boolean;
     log("Launching Chrome...");
     currentChromeSession = await launchChrome({
       headed: config.headed ?? true,
+      // Per-credential profile dir so each platform account keeps its own
+      // cookies / remember-me state and Chrome doesn't present every account
+      // as the same logged-out device. Falls back to the shared dir when the
+      // server doesn't send a profile id (see chrome-manager).
+      profileKey: typeof config.profileId === "number" ? `profile-${config.profileId}` : undefined,
       // Pin a stable window size so the CSS viewport (and screen-pixel
       // fingerprint) doesn't vary with whatever the user's WM happened to
       // restore. Common laptop size = unremarkable fingerprint.
@@ -2356,7 +2361,7 @@ function handleMessage(msg: ServerMessage): void {
 
   switch (msg.type) {
     case "startSession":
-      log(`   Config: headed=${msg.config.headed ?? true}, startUrl=${msg.config.startUrl || "(none)"}`);
+      log(`   Config: headed=${msg.config.headed ?? true}, startUrl=${msg.config.startUrl || "(none)"}, profileId=${msg.config.profileId ?? "(none)"}`);
       enqueueLifecycle("startSession", () => handleStartSession(msg.config));
       break;
 
