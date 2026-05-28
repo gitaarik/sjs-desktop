@@ -241,6 +241,21 @@ function withStep<T>(stepId: number | undefined, fn: () => Promise<T>): Promise<
   return stepContext.run({ stepId }, fn);
 }
 
+// Input-vs-capture gate. While an OS/CDP input command (click, type,
+// scroll) is running, screenshot captures are skipped so the live-view
+// poll can't compete for the X server / Chrome CDP and starve the input.
+// Run 523: live-view polling at ~5/sec made every opener clickAt exceed
+// its budget and time out; gating drops the overlap to at most the one
+// capture already in flight when the input starts.
+let inputInFlight = 0;
+
+function withInputGate<T>(fn: () => Promise<T>): Promise<T> {
+  inputInFlight++;
+  return fn().finally(() => {
+    inputInFlight--;
+  });
+}
+
 /**
  * Serializes lifecycle operations (startSession / stopSession / releaseCdp)
  * onto a single promise chain so they can't interleave.
@@ -1145,6 +1160,14 @@ function captureScreenshotOnce(
  * couple of chances before giving up.
  */
 async function handleScreenshotRequest(requestId: string, format: string, quality: number): Promise<void> {
+  if (inputInFlight > 0) {
+    // An input command is running — skip the capture so we don't compete
+    // for CDP. Live-view treats a null frame as "keep the last image"; the
+    // next poll catches up once the input completes.
+    send({ type: "screenshotResponse", requestId, data: null });
+    return;
+  }
+
   if (!currentChromeSession) {
     send({ type: "screenshotResponse", requestId, data: null });
     return;
@@ -2354,7 +2377,7 @@ function handleMessage(msg: ServerMessage): void {
 
     case "typeText":
       withStep(msg.stepId, () =>
-        handleTypeText(msg.text, msg.charDelayMs, msg.submitAfter ?? false, msg.requestId),
+        withInputGate(() => handleTypeText(msg.text, msg.charDelayMs, msg.submitAfter ?? false, msg.requestId)),
       ).catch((err) => {
         const error = err instanceof Error ? err.message : String(err);
         log(`ERROR: typeText failed: ${error}`);
@@ -2363,19 +2386,19 @@ function handleMessage(msg: ServerMessage): void {
       break;
 
     case "clearInput":
-      withStep(msg.stepId, () => handleClearInput()).catch((err) => {
+      withStep(msg.stepId, () => withInputGate(() => handleClearInput())).catch((err) => {
         log(`ERROR: clearInput failed: ${err instanceof Error ? err.message : String(err)}`);
       });
       break;
 
     case "scrollWheel":
-      withStep(msg.stepId, () => handleScrollWheel(msg.mouseX, msg.mouseY, msg.steps)).catch((err) => {
+      withStep(msg.stepId, () => withInputGate(() => handleScrollWheel(msg.mouseX, msg.mouseY, msg.steps))).catch((err) => {
         log(`ERROR: scrollWheel failed: ${err instanceof Error ? err.message : String(err)}`);
       });
       break;
 
     case "mouseMove":
-      withStep(msg.stepId, () => handleMouseMove(msg.steps)).catch((err) => {
+      withStep(msg.stepId, () => withInputGate(() => handleMouseMove(msg.steps))).catch((err) => {
         log(`ERROR: mouseMove failed: ${err instanceof Error ? err.message : String(err)}`);
       });
       break;
@@ -2391,7 +2414,7 @@ function handleMessage(msg: ServerMessage): void {
 
     case "clickElement":
       withStep(msg.stepId, () =>
-        handleClickElement(msg.requestId, msg.selector, msg.timeout, msg.modifiers, msg.button),
+        withInputGate(() => handleClickElement(msg.requestId, msg.selector, msg.timeout, msg.modifiers, msg.button)),
       ).catch((err) => {
         const error = err instanceof Error ? err.message : String(err);
         log(`ERROR: clickElement failed: ${error}`);
@@ -2401,7 +2424,7 @@ function handleMessage(msg: ServerMessage): void {
 
     case "clickAt":
       withStep(msg.stepId, () =>
-        handleClickAt(msg.requestId, msg.x, msg.y, msg.timeout, msg.modifiers, msg.button),
+        withInputGate(() => handleClickAt(msg.requestId, msg.x, msg.y, msg.timeout, msg.modifiers, msg.button)),
       ).catch((err) => {
         const error = err instanceof Error ? err.message : String(err);
         log(`ERROR: clickAt failed: ${error}`);
@@ -2411,7 +2434,7 @@ function handleMessage(msg: ServerMessage): void {
 
     case "scrollRevealLazyContent":
       withStep(msg.stepId, () =>
-        handleScrollRevealLazyContent(msg.requestId, msg.viewport, msg.maxRounds, msg.noChangeLimit),
+        withInputGate(() => handleScrollRevealLazyContent(msg.requestId, msg.viewport, msg.maxRounds, msg.noChangeLimit)),
       ).catch((err) => {
         const error = err instanceof Error ? err.message : String(err);
         log(`ERROR: scrollRevealLazyContent failed: ${error}`);
