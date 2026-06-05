@@ -16,8 +16,8 @@
     "@tauri-apps/plugin-process": "^2.0.0"
   },
   "devDependencies": {
-    "svelte": "^4.0.0",
-    "@sveltejs/vite-plugin-svelte": "^3.0.0",
+    "svelte": "^5.56.2",
+    "@sveltejs/vite-plugin-svelte": "^7.1.2",
     "vite": "^5.0.0",
     "typescript": "^5.7.0"
   }
