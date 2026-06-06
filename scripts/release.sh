@@ -156,7 +156,7 @@ npm version "$NEW_VERSION" --no-git-tag-version > /dev/null
 echo "==> Committing and tagging..."
 cd "$DESKTOP_DIR"
 git add src-tauri/tauri.conf.json package.json package-lock.json 2>/dev/null || git add src-tauri/tauri.conf.json package.json
-git commit -m "Bump version to $NEW_VERSION"
+git commit -m "chore(release): $NEW_TAG"
 git tag "$NEW_TAG"
 git push origin main --tags
 
@@ -167,7 +167,7 @@ echo "    Pushed $NEW_TAG"
 echo "==> Updating meta-repo submodule..."
 cd "$META_DIR"
 git add desktop
-git commit -m "Update submodule: desktop $NEW_TAG"
+git commit -m "build(desktop): release $NEW_TAG"
 git tag "desktop-$NEW_TAG"
 git push origin master --tags
 
