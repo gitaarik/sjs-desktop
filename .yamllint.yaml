@@ -3,7 +3,7 @@ rules:
   truthy:
     check-keys: false
   line-length:
-    max: 140
+    max: 200
   document-start: disable
   indentation:
     spaces: consistent
