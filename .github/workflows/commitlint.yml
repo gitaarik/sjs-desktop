@@ -18,7 +18,26 @@ jobs:
   commitlint:
     # Dependabot commits are auto-generated; their long bodies (release
     # notes) trip body-max-line-length. Skip lint for the bot.
-    if: github.actor != 'dependabot[bot]'
+    #
+    # Two conditions, because they cover different events. On a Dependabot PR
+    # the actor IS the bot, so the first is enough. On the push that lands the
+    # merge, the actor is whoever clicked merge — a human — while the commit's
+    # AUTHOR is still dependabot[bot]. So the actor check alone left every
+    # merged Dependabot commit failing on main (run 31165718303), which is a
+    # permanent red against history nobody can rewrite.
+    #
+    # `head_commit` does not exist on pull_request events; the comparison is
+    # then null != '...' which is true, so the actor check still governs there.
+    #
+    # Note the trust model before copying this elsewhere: a commit author name
+    # is self-asserted, so anyone who can push can spoof it and skip this job.
+    # That is acceptable here — all it skips is commit-message linting, which is
+    # a style convention, not a security control. Do not reuse this shape to
+    # gate anything that matters. It is also only read in an `if:`, never
+    # interpolated into a `run:`, so there is no injection surface.
+    if: >-
+      github.actor != 'dependabot[bot]' &&
+      github.event.head_commit.author.name != 'dependabot[bot]'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
