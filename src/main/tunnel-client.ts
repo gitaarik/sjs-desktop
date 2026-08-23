@@ -1330,7 +1330,18 @@ const XDOTOOL_BUTTON_MAP: Record<"left" | "middle" | "right", number> = {
  *
  * Both inputs are in CSS pixels (DIPs):
  *  - `Browser.getWindowForTarget` returns `bounds` in DIPs on all platforms.
- *  - `Page.getLayoutMetrics.cssLayoutViewport` is by definition CSS px.
+ *  - `window.innerHeight` is by definition CSS px.
+ *
+ * The viewport height MUST come from `window.innerHeight`, not from
+ * `Page.getLayoutMetrics().cssLayoutViewport.clientHeight` as it used to. The
+ * two differ by exactly the horizontal scrollbar — `clientHeight` excludes it
+ * and the window height does not — so on any page wide enough to scroll
+ * sideways the subtraction credits the scrollbar to the toolbar and every
+ * click lands that far BELOW its target. Measured on Chrome 149 under Xvfb:
+ * same window, `clientHeight` 963 → 948 with a horizontal scrollbar while
+ * `innerHeight` stayed 963. 15px, intermittent by whether the page happens to
+ * scroll sideways, always downward — the "filter click lands one row low"
+ * symptom, which once applied a wrong location filter and reported success.
  *
  * The output unit is whatever the per-platform input API uses:
  *  - Linux xdotool on X11: DIPs (the X server reports a logical screen size
@@ -1763,13 +1774,15 @@ async function handleClickElement(
       const { bounds } = await cdpCall<{
         bounds: { left?: number; top?: number; width: number; height: number };
       }>("Browser.getWindowForTarget", {});
-      const layoutMetrics = await cdpCall<{
-        cssLayoutViewport: { clientHeight: number };
-      }>("Page.getLayoutMetrics", {});
-      const dprResult = await cdpCall<{ result: { value?: number } }>(
-        "Runtime.evaluate",
-        { expression: "window.devicePixelRatio", returnByValue: true },
-      );
+      // One evaluate for both: they are read together, so nothing can change
+      // the window between them.
+      const metrics = await cdpCall<{
+        result: { value?: { innerHeight: number; dpr: number } };
+      }>("Runtime.evaluate", {
+        expression:
+          "({ innerHeight: window.innerHeight, dpr: window.devicePixelRatio })",
+        returnByValue: true,
+      });
 
       const win = {
         left: bounds.left ?? 0,
@@ -1777,8 +1790,8 @@ async function handleClickElement(
         width: bounds.width,
         height: bounds.height,
       };
-      const viewportHeight = layoutMetrics.cssLayoutViewport.clientHeight;
-      const dpr = dprResult.result?.value ?? 1;
+      const viewportHeight = metrics.result?.value?.innerHeight ?? 0;
+      const dpr = metrics.result?.value?.dpr ?? 1;
 
       const cssScreenPath = pagePath.map((p) =>
         pageToScreen(p.x, p.y, win, viewportHeight)
@@ -1964,13 +1977,18 @@ async function handleClickAt(
       });
     };
 
-    // Layout metrics are only needed for the OS-level path's page→screen
-    // translation; CDP click works in viewport coords directly.
-    const layoutMetrics = await cdpCall<{
-      cssLayoutViewport: { clientHeight: number; clientWidth: number };
-    }>("Page.getLayoutMetrics", {});
-    const viewportH = layoutMetrics.cssLayoutViewport.clientHeight;
-    const viewportW = layoutMetrics.cssLayoutViewport.clientWidth;
+    // Viewport size is only needed for the OS-level path's page→screen
+    // translation; CDP click works in viewport coords directly. `innerHeight`
+    // rather than `cssLayoutViewport.clientHeight` — see pageToScreen.
+    const viewport = await cdpCall<{
+      result: { value?: { innerHeight: number; innerWidth: number } };
+    }>("Runtime.evaluate", {
+      expression:
+        "({ innerHeight: window.innerHeight, innerWidth: window.innerWidth })",
+      returnByValue: true,
+    });
+    const viewportH = viewport.result?.value?.innerHeight ?? 0;
+    const viewportW = viewport.result?.value?.innerWidth ?? 0;
 
     // Start the bezier from the cursor's real last position so the path
     // chains between actions; fall back to a random viewport point only
