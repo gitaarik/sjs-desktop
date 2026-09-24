@@ -1,4 +1,4 @@
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use std::sync::Mutex;
 use tauri::{
     image::Image,
@@ -20,52 +20,6 @@ struct AppState {
     icon_active: Image<'static>,
     icon_inactive: Image<'static>,
     icon_reconnecting: Image<'static>,
-}
-
-/// Message from the sidecar (stdout JSON lines)
-#[derive(Debug, Deserialize, Clone)]
-#[serde(tag = "type")]
-enum SidecarMessage {
-    #[serde(rename = "status")]
-    Status { status: String },
-    #[serde(rename = "log")]
-    Log { message: String },
-    #[serde(rename = "intervention")]
-    Intervention {
-        #[serde(rename = "interventionType")]
-        intervention_type: String,
-    },
-    #[serde(rename = "chromeReady")]
-    ChromeReady { pid: Option<u32> },
-    #[serde(rename = "chromeDownloadProgress")]
-    ChromeDownloadProgress { percent: f64, status: String },
-    #[serde(rename = "error")]
-    Error { message: String },
-}
-
-/// Status payload sent to the frontend
-#[derive(Debug, Serialize, Clone)]
-struct StatusPayload {
-    status: String,
-}
-
-/// Log payload sent to the frontend
-#[derive(Debug, Serialize, Clone)]
-struct LogPayload {
-    message: String,
-}
-
-/// Intervention payload sent to the frontend
-#[derive(Debug, Serialize, Clone)]
-struct InterventionPayload {
-    intervention_type: String,
-}
-
-/// Chrome download progress payload
-#[derive(Debug, Serialize, Clone)]
-struct ProgressPayload {
-    percent: f64,
-    status: String,
 }
 
 /// Get the current connection status
