@@ -104,7 +104,9 @@ struct UpdateInfo {
 #[tauri::command]
 async fn check_for_update(app: AppHandle, channel: String) -> Result<Option<UpdateInfo>, String> {
     let endpoint: url::Url = match channel.as_str() {
-        "beta" => "https://github.com/gitaarik/sjs-desktop/releases/download/beta-latest/latest.json",
+        "beta" => {
+            "https://github.com/gitaarik/sjs-desktop/releases/download/beta-latest/latest.json"
+        }
         _ => "https://github.com/gitaarik/sjs-desktop/releases/latest/download/latest.json",
     }
     .parse()
@@ -131,7 +133,9 @@ async fn check_for_update(app: AppHandle, channel: String) -> Result<Option<Upda
 #[tauri::command]
 async fn download_and_install_update(app: AppHandle, channel: String) -> Result<(), String> {
     let endpoint: url::Url = match channel.as_str() {
-        "beta" => "https://github.com/gitaarik/sjs-desktop/releases/download/beta-latest/latest.json",
+        "beta" => {
+            "https://github.com/gitaarik/sjs-desktop/releases/download/beta-latest/latest.json"
+        }
         _ => "https://github.com/gitaarik/sjs-desktop/releases/latest/download/latest.json",
     }
     .parse()
@@ -188,21 +192,20 @@ pub fn run() {
         ])
         .setup(|app| {
             // Build tray menu
-            let show_i =
-                MenuItem::with_id(app, "show", "Open Local Scraper", true, None::<&str>)?;
-            let chrome_i =
-                MenuItem::with_id(app, "chrome", "Open Browser", false, None::<&str>)?;
+            let show_i = MenuItem::with_id(app, "show", "Open Local Scraper", true, None::<&str>)?;
+            let chrome_i = MenuItem::with_id(app, "chrome", "Open Browser", false, None::<&str>)?;
             let sep1 = PredefinedMenuItem::separator(app)?;
             let status_i =
                 MenuItem::with_id(app, "status", "Status: Disconnected", false, None::<&str>)?;
             let sep2 = PredefinedMenuItem::separator(app)?;
-            let connect_i =
-                MenuItem::with_id(app, "connect", "Connect", false, None::<&str>)?;
+            let connect_i = MenuItem::with_id(app, "connect", "Connect", false, None::<&str>)?;
             let sep3 = PredefinedMenuItem::separator(app)?;
             let quit_i = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
             let menu = Menu::with_items(
                 app,
-                &[&show_i, &chrome_i, &sep1, &status_i, &sep2, &connect_i, &sep3, &quit_i],
+                &[
+                    &show_i, &chrome_i, &sep1, &status_i, &sep2, &connect_i, &sep3, &quit_i,
+                ],
             )?;
 
             // Build active + inactive (grayed-out) tray icons from the default icon
@@ -257,7 +260,11 @@ pub fn run() {
                         let current = state.status.lock().unwrap().clone();
                         if matches!(
                             current.as_str(),
-                            "connected" | "scraping" | "connecting" | "authenticating" | "reconnecting"
+                            "connected"
+                                | "scraping"
+                                | "connecting"
+                                | "authenticating"
+                                | "reconnecting"
                         ) {
                             let _ = app.emit("tray-stop", ());
                         } else {
