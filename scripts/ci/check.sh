@@ -7,6 +7,12 @@ npm ci
 # TS type-check across src/main (and any other TS in the workspace).
 npm run typecheck
 
+# oxlint over the TypeScript and App.svelte's script, and prettier over the
+# same files. typescript-eslint needs TypeScript's JS API, which TypeScript 7
+# no longer ships. Both clean since 2026-09-26, so any finding fails.
+npm run lint
+npm run format:check
+
 # The Svelte UI, which the root tsconfig excludes and nothing else checked:
 # svelte-check type-checks App.svelte and main.ts and fails on any warning.
 ( cd src/ui && npm run check )
