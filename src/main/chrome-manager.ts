@@ -91,7 +91,11 @@ function getFreePort(): Promise<number> {
 /**
  * Fetch Chrome's /json/version endpoint.
  */
-function fetchCdpVersion(port: number, maxRetries = 20, retryDelay = 500): Promise<Record<string, unknown>> {
+function fetchCdpVersion(
+  port: number,
+  maxRetries = 20,
+  retryDelay = 500,
+): Promise<Record<string, unknown>> {
   return new Promise((resolve, reject) => {
     let attempts = 0;
 
@@ -111,7 +115,8 @@ function fetchCdpVersion(port: number, maxRetries = 20, retryDelay = 500): Promi
 
       req.on("error", () => {
         if (attempts < maxRetries) {
-          if (attempts % 5 === 0) console.log(`[Chrome] Waiting for CDP... (attempt ${attempts}/${maxRetries})`);
+          if (attempts % 5 === 0)
+            console.log(`[Chrome] Waiting for CDP... (attempt ${attempts}/${maxRetries})`);
           setTimeout(attempt, retryDelay);
         } else {
           reject(new Error(`Chrome did not start within ${maxRetries * retryDelay}ms`));
@@ -121,7 +126,8 @@ function fetchCdpVersion(port: number, maxRetries = 20, retryDelay = 500): Promi
       req.setTimeout(2000, () => {
         req.destroy();
         if (attempts < maxRetries) {
-          if (attempts % 5 === 0) console.log(`[Chrome] CDP timeout, retrying... (attempt ${attempts}/${maxRetries})`);
+          if (attempts % 5 === 0)
+            console.log(`[Chrome] CDP timeout, retrying... (attempt ${attempts}/${maxRetries})`);
           setTimeout(attempt, retryDelay);
         } else {
           reject(new Error(`Chrome /json/version timeout after ${maxRetries} attempts`));
@@ -150,9 +156,7 @@ export async function launchChrome(options: {
 }): Promise<ChromeSession> {
   const chromePath = options.chromePath || findChromePath();
   if (!chromePath) {
-    throw new Error(
-      "Chrome not found. Install Google Chrome or set the Chrome path in settings.",
-    );
+    throw new Error("Chrome not found. Install Google Chrome or set the Chrome path in settings.");
   }
 
   const port = await getFreePort();
@@ -168,8 +172,9 @@ export async function launchChrome(options: {
   // cookie. Falls back to the legacy shared dir when no key is supplied (e.g.
   // the debug Chrome, or older servers that don't send a profile id).
   const safeKey = options.profileKey?.replace(/[^a-zA-Z0-9_-]/g, "") || "";
-  const userDataDir = options.userDataDir
-    || (safeKey
+  const userDataDir =
+    options.userDataDir ||
+    (safeKey
       ? path.join(os.homedir(), ".sjs", "chrome-profiles", safeKey)
       : path.join(os.homedir(), ".sjs", "chrome-user-data"));
 
@@ -184,7 +189,9 @@ export async function launchChrome(options: {
     let prefs: Record<string, unknown> = {};
     try {
       prefs = JSON.parse(fs.readFileSync(prefsPath, "utf-8"));
-    } catch { /* no existing prefs */ }
+    } catch {
+      /* no existing prefs */
+    }
     prefs.credentials_enable_service = false;
     prefs.profile = {
       ...(prefs.profile as Record<string, unknown>),
@@ -195,14 +202,20 @@ export async function launchChrome(options: {
     prefs.session = { restore_on_startup: 1 };
     fs.writeFileSync(prefsPath, JSON.stringify(prefs));
   } catch (err) {
-    console.error(`[Chrome] Failed to write preferences: ${err instanceof Error ? err.stack || err.message : String(err)}`);
+    console.error(
+      `[Chrome] Failed to write preferences: ${err instanceof Error ? err.stack || err.message : String(err)}`,
+    );
   }
 
   // Remove stale lock files left by previous Chrome crashes/kills —
   // without this, Chrome refuses to start with "profile in use" errors
   for (const lockFile of ["SingletonLock", "SingletonSocket", "SingletonCookie"]) {
     const lockPath = path.join(userDataDir, lockFile);
-    try { fs.unlinkSync(lockPath); } catch { /* doesn't exist */ }
+    try {
+      fs.unlinkSync(lockPath);
+    } catch {
+      /* doesn't exist */
+    }
   }
 
   // Clear session restore data (tabs) but keep cookies/login state.

@@ -32,7 +32,8 @@ const BETA = {
   identifier: "com.smartjobseeker.desktop.beta",
   productName: "Smart Job Seeker Beta",
   windowTitle: "Smart Job Seeker Beta",
-  updaterEndpoint: "https://github.com/gitaarik/sjs-desktop/releases/download/beta-latest/latest.json",
+  updaterEndpoint:
+    "https://github.com/gitaarik/sjs-desktop/releases/download/beta-latest/latest.json",
 };
 
 const undo = process.argv.includes("--undo");

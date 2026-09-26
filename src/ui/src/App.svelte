@@ -188,8 +188,10 @@
     updateAvailable = null;
     try {
       const { invoke } = await import("@tauri-apps/api/core");
-      const result: { version: string; body: string | null } | null =
-        await invoke("check_for_update", { channel: updateChannel });
+      const result: { version: string; body: string | null } | null = await invoke(
+        "check_for_update",
+        { channel: updateChannel },
+      );
       if (result) {
         updateAvailable = result.version;
         updateBody = result.body ?? null;
@@ -332,23 +334,25 @@
   }
 
   // Status display
-  $: statusColor = {
-    connected: "#22c55e",
-    scraping: "#3b82f6",
-    connecting: "#f59e0b",
-    authenticating: "#f59e0b",
-    reconnecting: "#f59e0b",
-    disconnected: "#6b7280",
-  }[status] || "#6b7280";
+  $: statusColor =
+    {
+      connected: "#22c55e",
+      scraping: "#3b82f6",
+      connecting: "#f59e0b",
+      authenticating: "#f59e0b",
+      reconnecting: "#f59e0b",
+      disconnected: "#6b7280",
+    }[status] || "#6b7280";
 
-  $: statusLabel = {
-    connected: "Connected",
-    scraping: "Scraping",
-    connecting: "Connecting...",
-    authenticating: "Authenticating...",
-    reconnecting: "Reconnecting...",
-    disconnected: "Disconnected",
-  }[status] || status;
+  $: statusLabel =
+    {
+      connected: "Connected",
+      scraping: "Scraping",
+      connecting: "Connecting...",
+      authenticating: "Authenticating...",
+      reconnecting: "Reconnecting...",
+      disconnected: "Disconnected",
+    }[status] || status;
 
   $: isConnected = status === "connected" || status === "scraping";
   $: isConnecting = status === "connecting" || status === "authenticating";
@@ -359,10 +363,20 @@
   $: hasChrome = !!chromeVersion;
   $: if (configLoaded) updateTrayState(status, hasConfig, hasChrome, debugChromeOpen);
 
-  async function updateTrayState(currentStatus: string, currentHasConfig: boolean, currentHasChrome: boolean, currentDebugChromeOpen: boolean) {
+  async function updateTrayState(
+    currentStatus: string,
+    currentHasConfig: boolean,
+    currentHasChrome: boolean,
+    currentDebugChromeOpen: boolean,
+  ) {
     try {
       const { invoke } = await import("@tauri-apps/api/core");
-      await invoke("update_tray_state", { status: currentStatus, hasConfig: currentHasConfig, hasChrome: currentHasChrome, debugChromeOpen: currentDebugChromeOpen });
+      await invoke("update_tray_state", {
+        status: currentStatus,
+        hasConfig: currentHasConfig,
+        hasChrome: currentHasChrome,
+        debugChromeOpen: currentDebugChromeOpen,
+      });
     } catch {
       // Not running in Tauri
     }
@@ -373,7 +387,10 @@
   <header>
     <div class="header-left">
       <h1>Smart Job Seeker</h1>
-      {#if appVersion}<span class="app-version">v{appVersion}{#if updateChannel === "beta"} (beta){/if}</span>{/if}
+      {#if appVersion}<span class="app-version"
+          >v{appVersion}{#if updateChannel === "beta"}
+            (beta){/if}</span
+        >{/if}
     </div>
     <div class="status-badge" style="background: {statusColor}">
       {statusLabel}
@@ -401,9 +418,19 @@
 
   <!-- Tabs -->
   <nav class="tabs">
-    <button class="tab" class:active={activeTab === "connection"} on:click={() => (activeTab = "connection")}>Connection</button>
-    <button class="tab" class:active={activeTab === "chrome"} on:click={() => (activeTab = "chrome")}>Chrome</button>
-    <button class="tab" class:active={activeTab === "log"} on:click={() => (activeTab = "log")}>Activity Log</button>
+    <button
+      class="tab"
+      class:active={activeTab === "connection"}
+      on:click={() => (activeTab = "connection")}>Connection</button
+    >
+    <button
+      class="tab"
+      class:active={activeTab === "chrome"}
+      on:click={() => (activeTab = "chrome")}>Chrome</button
+    >
+    <button class="tab" class:active={activeTab === "log"} on:click={() => (activeTab = "log")}
+      >Activity Log</button
+    >
   </nav>
 
   {#if activeTab === "connection"}
@@ -420,7 +447,10 @@
               class="server-option"
               class:active={server === s.id}
               disabled={isConnected || isConnecting || isReconnecting}
-              on:click={() => { server = s.id; urlError = ""; }}
+              on:click={() => {
+                server = s.id;
+                urlError = "";
+              }}
             >
               {s.label}
             </button>
@@ -478,17 +508,40 @@
       </label>
 
       <label class="checkbox">
-        <input type="checkbox" bind:checked={autoConnect} disabled={!isConnected && !autoConnect} on:change={async () => { await tick(); handleSaveConfig(); }} />
+        <input
+          type="checkbox"
+          bind:checked={autoConnect}
+          disabled={!isConnected && !autoConnect}
+          on:change={async () => {
+            await tick();
+            handleSaveConfig();
+          }}
+        />
         Connect automatically on startup
       </label>
 
       <label class="checkbox">
-        <input type="checkbox" bind:checked={headed} disabled={isConnected || isConnecting || isReconnecting} on:change={async () => { await tick(); handleSaveConfig(); }} />
+        <input
+          type="checkbox"
+          bind:checked={headed}
+          disabled={isConnected || isConnecting || isReconnecting}
+          on:change={async () => {
+            await tick();
+            handleSaveConfig();
+          }}
+        />
         Show browser window (recommended for CAPTCHA solving)
       </label>
 
       <label class="checkbox">
-        <input type="checkbox" bind:checked={autoReconnect} on:change={async () => { await tick(); handleSaveConfig(); }} />
+        <input
+          type="checkbox"
+          bind:checked={autoReconnect}
+          on:change={async () => {
+            await tick();
+            handleSaveConfig();
+          }}
+        />
         Auto-reconnect on unexpected disconnect
       </label>
 
@@ -617,7 +670,9 @@
     font-size: 13px;
     font-weight: 500;
     cursor: pointer;
-    transition: background 0.15s, color 0.15s;
+    transition:
+      background 0.15s,
+      color 0.15s;
   }
 
   .tab:hover {
@@ -712,7 +767,9 @@
     font-size: 13px;
     font-weight: 500;
     cursor: pointer;
-    transition: background 0.15s, color 0.15s;
+    transition:
+      background 0.15s,
+      color 0.15s;
   }
 
   .server-option:not(:first-child) {

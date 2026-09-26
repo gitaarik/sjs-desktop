@@ -98,10 +98,7 @@ function readMetadata(installDir: string): CfTMetadata | null {
  * Write the metadata file.
  */
 function writeMetadata(installDir: string, meta: CfTMetadata): void {
-  fs.writeFileSync(
-    path.join(installDir, "metadata.json"),
-    JSON.stringify(meta, null, 2),
-  );
+  fs.writeFileSync(path.join(installDir, "metadata.json"), JSON.stringify(meta, null, 2));
 }
 
 /**
@@ -193,7 +190,9 @@ export async function downloadChromeForTesting(
   // Clean up ZIP
   try {
     fs.unlinkSync(zipPath);
-  } catch { /* ignore */ }
+  } catch {
+    /* ignore */
+  }
 
   // Make binary executable (Linux/macOS)
   const chromePath = getChromeBinaryPath(installDir);
@@ -294,10 +293,9 @@ function extractZip(zipPath: string, destDir: string): Promise<void> {
 
       if (platform === "win32") {
         // Use PowerShell on Windows
-        execSync(
-          `powershell -command "Expand-Archive -Force '${zipPath}' '${destDir}'"`,
-          { stdio: "pipe" },
-        );
+        execSync(`powershell -command "Expand-Archive -Force '${zipPath}' '${destDir}'"`, {
+          stdio: "pipe",
+        });
       } else {
         // Use unzip on Linux/macOS
         execSync(`unzip -o -q "${zipPath}" -d "${destDir}"`, {

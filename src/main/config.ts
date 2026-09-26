@@ -58,7 +58,10 @@ export function loadConfig(): AppConfig {
       const data = fs.readFileSync(configPath, "utf-8");
       const config = { ...DEFAULT_CONFIG, ...JSON.parse(data) };
       // Migrate: old "preview" server id → "dev" (URL mapping was corrected)
-      if (config.server === "preview" && (!config.serverUrl || config.serverUrl.includes("dev.smartjobseeker.com"))) {
+      if (
+        config.server === "preview" &&
+        (!config.serverUrl || config.serverUrl.includes("dev.smartjobseeker.com"))
+      ) {
         config.server = "dev";
         if (config.apiTokens["preview"]) {
           config.apiTokens["dev"] = config.apiTokens["preview"];

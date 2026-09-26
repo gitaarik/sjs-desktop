@@ -111,7 +111,9 @@ function handleConfigure(cmd: ConfigureCommand): void {
     config.autoReconnect = cmd.autoReconnect;
   }
   saveConfig(config);
-  emitLog(`Configuration saved (autoConnect=${config.autoConnect}, headed=${config.headed}, autoReconnect=${config.autoReconnect}, server=${config.server}, serverUrl=${config.serverUrl ? "set" : "empty"}, apiToken=${config.apiToken ? "set" : "empty"})`);
+  emitLog(
+    `Configuration saved (autoConnect=${config.autoConnect}, headed=${config.headed}, autoReconnect=${config.autoReconnect}, server=${config.server}, serverUrl=${config.serverUrl ? "set" : "empty"}, apiToken=${config.apiToken ? "set" : "empty"})`,
+  );
   emit({ type: "configured", config: { serverUrl: config.serverUrl, headed: config.headed } });
 }
 
@@ -148,7 +150,9 @@ async function handleCloseChrome(): Promise<void> {
   if (!debugChrome) return;
   try {
     await debugChrome.kill();
-  } catch { /* already dead */ }
+  } catch {
+    /* already dead */
+  }
   debugChrome = null;
   emit({ type: "chromeDebug", open: false });
   emitLog("Debug browser closed");
