@@ -598,15 +598,6 @@
     font-weight: 400;
   }
 
-  h2 {
-    font-size: 14px;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    color: var(--text-secondary);
-    margin: 0 0 12px 0;
-  }
-
   .tabs {
     display: flex;
     gap: 2px;

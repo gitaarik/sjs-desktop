@@ -3,9 +3,7 @@ version: 2
 updates:
   # --- npm ---
   - package-ecosystem: npm
-    directories:
-      - /
-      - /src/ui
+    directory: /
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
@@ -17,6 +15,27 @@ updates:
         update-types:
           - minor
           - patch
+
+  # The UI is type-checked by svelte-check, whose TypeScript peer range is
+  # ^5 || ^6, so the UI stays on TypeScript 6 until svelte-check takes 7. The
+  # root's TypeScript is plain `tsc` and moves freely.
+  - package-ecosystem: npm
+    directory: /src/ui
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: build
+      include: scope
+    groups:
+      npm-minor-patch:
+        update-types:
+          - minor
+          - patch
+    ignore:
+      - dependency-name: typescript
+        update-types:
+          - version-update:semver-major
 
   # --- Rust (Tauri backend) ---
   - package-ecosystem: cargo

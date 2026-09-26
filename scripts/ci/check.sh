@@ -7,6 +7,10 @@ npm ci
 # TS type-check across src/main (and any other TS in the workspace).
 npm run typecheck
 
+# The Svelte UI, which the root tsconfig excludes and nothing else checked:
+# svelte-check type-checks App.svelte and main.ts and fails on any warning.
+( cd src/ui && npm run check )
+
 # Tauri's build.rs validates that the externalBin sidecar binary exists at
 # src-tauri/binaries/<triple>. For PR-time CI we only care that the Rust
 # code compiles — the real sidecar is built per-platform by release.yml.
