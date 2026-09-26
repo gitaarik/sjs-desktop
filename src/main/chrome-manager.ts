@@ -103,7 +103,7 @@ function fetchCdpVersion(port: number, maxRetries = 20, retryDelay = 500): Promi
         res.on("end", () => {
           try {
             resolve(JSON.parse(data));
-          } catch (err) {
+          } catch {
             reject(new Error(`Invalid JSON from Chrome /json/version: ${data}`));
           }
         });
@@ -187,7 +187,7 @@ export async function launchChrome(options: {
     } catch { /* no existing prefs */ }
     prefs.credentials_enable_service = false;
     prefs.profile = {
-      ...(prefs.profile as Record<string, unknown> || {}),
+      ...(prefs.profile as Record<string, unknown>),
       password_manager_enabled: false,
       exit_type: "Normal",
       exited_cleanly: true,

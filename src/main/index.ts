@@ -5,8 +5,8 @@
  * Run with: npx tsx src/main/index.ts
  */
 
-import { loadConfig, saveConfig, type AppConfig } from "./config";
-import { connect, disconnect, getStatus } from "./tunnel-client";
+import { loadConfig, saveConfig } from "./config";
+import { connect, disconnect } from "./tunnel-client";
 import readline from "readline";
 
 async function main(): Promise<void> {
@@ -47,7 +47,7 @@ async function main(): Promise<void> {
 
   // Connect to the tunnel
   connect(config, {
-    onStatusChange: (status) => {
+    onStatusChange: () => {
       // Status already logged by tunnel-client
     },
     onError: (error) => {

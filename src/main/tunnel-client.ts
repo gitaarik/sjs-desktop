@@ -899,7 +899,7 @@ async function typeViaOsascript(text: string, charDelayMs: number): Promise<void
  */
 async function typeViaSendKeys(text: string, charDelayMs: number): Promise<void> {
   // SendKeys reserves these chars; wrap them in {} to type literally.
-  const sendKeysSpecial = /[+^~%(){}\[\]]/;
+  const sendKeysSpecial = /[+^~%(){}[\]]/;
   const stmts: string[] = [];
   for (let i = 0; i < text.length; i++) {
     const ch = text[i];
@@ -1666,7 +1666,7 @@ async function handleClickElement(
   let targetsBefore: string[] = [];
   if (cdpPort) {
     try {
-      const targets: { id: string; type: string }[] = await new Promise((resolve, reject) => {
+      const targets: { id: string; type: string }[] = await new Promise((resolve) => {
         const req = http.get(`http://127.0.0.1:${cdpPort}/json`, (res) => {
           let data = "";
           res.on("data", (chunk: string) => (data += chunk));
@@ -1865,7 +1865,7 @@ async function handleClickElement(
     // Brief wait for the browser to create the tab target
     await new Promise((r) => setTimeout(r, 300));
     try {
-      const targets: { id: string; type: string }[] = await new Promise((resolve, reject) => {
+      const targets: { id: string; type: string }[] = await new Promise((resolve) => {
         const req = http.get(`http://127.0.0.1:${cdpPort}/json`, (res) => {
           let data = "";
           res.on("data", (chunk: string) => (data += chunk));

@@ -16,6 +16,9 @@
     "sidecar:build:mac-arm64": "npm run sidecar:bundle && npx pkg dist/sidecar-bundle.cjs --target node20-macos-arm64 --output src-tauri/binaries/sjs-sidecar-aarch64-apple-darwin",
     "sidecar:build:win-x64": "npm run sidecar:bundle && npx pkg dist/sidecar-bundle.cjs --target node20-win-x64 --output src-tauri/binaries/sjs-sidecar-x86_64-pc-windows-msvc.exe",
     "typecheck": "tsc --noEmit",
+    "lint": "oxlint --deny-warnings",
+    "format": "prettier --write \"**/*.{ts,js,mjs,cjs,svelte}\"",
+    "format:check": "prettier --check \"**/*.{ts,js,mjs,cjs,svelte}\"",
     "tauri:dev": "cd src-tauri && cargo tauri dev",
     "tauri:build": "cd src-tauri && cargo tauri build",
     "ui:dev": "cd src/ui && npm run dev",
@@ -27,11 +30,14 @@
     "ws": "^8.21.3"
   },
   "devDependencies": {
-    "@yao-pkg/pkg": "^6.22.0",
-    "typescript": "^7.0.2",
-    "@types/ws": "^8.5.0",
     "@types/node": "^26.2.0",
+    "@types/ws": "^8.5.0",
+    "@yao-pkg/pkg": "^6.22.0",
+    "esbuild": "^0.28.2",
+    "oxlint": "^1.85.0",
+    "prettier": "^3.9.9",
+    "prettier-plugin-svelte": "^4.1.1",
     "tsx": "^4.23.12",
-    "esbuild": "^0.28.2"
+    "typescript": "^7.0.2"
   }
 }
