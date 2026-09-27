@@ -6,8 +6,9 @@ on:
       - "v*"
   workflow_dispatch:
 
+# Only the two jobs that publish can write: check-version reads the tree.
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   check-version:
@@ -16,7 +17,7 @@ jobs:
     outputs:
       is_prerelease: ${{ steps.prerelease.outputs.is_prerelease }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - name: Check tag matches tauri.conf.json version
         run: |
           TAG="${GITHUB_REF#refs/tags/v}"
@@ -63,18 +64,49 @@ jobs:
 
     runs-on: ${{ matrix.platform }}
 
-    steps:
-      - uses: actions/checkout@v7
+    permissions:
+      contents: write
 
-      - uses: actions/setup-node@v7
+    # The release notes, once for the three release attempts below.
+    env:
+      RELEASE_BODY: |
+        ## Download
+
+        Pick the installer for your platform:
+
+        - **macOS (Apple Silicon)** — `.dmg` file (aarch64)
+        - **macOS (Intel)** — `.dmg` file (x64)
+        - **Windows** — `.msi` or `.exe` installer
+        - **Linux** — `.AppImage` (universal) or `.deb` (Debian/Ubuntu)
+
+        ## First launch
+
+        The app downloads Chrome for Testing (~175MB) on first launch. This is a one-time download.
+
+        ## Platform notes
+
+        **macOS**: If you see "unidentified developer", right-click the app
+        and choose **Open**, then click **Open** again in the dialog.
+
+        **Windows**: If SmartScreen shows a warning, click **More info** then **Run anyway**.
+
+        ## Build from source
+
+        See [BUILD.md](https://github.com/gitaarik/sjs-desktop/blob/main/BUILD.md) for instructions.
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
         with:
           node-version: "22"
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87  # stable
         with:
+          toolchain: stable
           targets: ${{ matrix.rust_target }}
 
-      - uses: swatinem/rust-cache@v2
+      - uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
         with:
           workspaces: src-tauri
 
@@ -141,66 +173,95 @@ jobs:
             echo "value=" >> "$GITHUB_OUTPUT"
           fi
 
-      # Build Tauri app and create GitHub Release.
+      # Build the Tauri app and create the GitHub Release, up to three times,
+      # 30 s apart. tauri-action hits a known race when several platform jobs
+      # upload latest.json to the same release in parallel: one job's "update
+      # existing asset" call returns 404 because another job just
+      # deleted+recreated the asset between our id-lookup and our update.
+      # v0.4.2 release: Windows failed exactly there, even though the MSI +
+      # NSIS + sigs uploaded fine just before.
       #
-      # Wrapped in Wandalen/wretry.action because tauri-action hits a known
-      # race when several platform jobs upload latest.json to the same
-      # release in parallel: one job's "update existing asset" call returns
-      # 404 because another job just deleted+recreated the asset between
-      # our id-lookup and our update. v0.4.2 release: Windows failed exactly
-      # there, even though the MSI + NSIS + sigs uploaded fine just before.
-      # 3 attempts × 30s delay covers the worst-case race window.
-      - uses: Wandalen/wretry.action@v3
+      # Plain steps rather than Wandalen/wretry.action, which fetches its own
+      # code and the action it wraps by tag when it runs, so pinning it to a
+      # commit would not have pinned the code that gets the signing key. Keep
+      # the three attempts identical. The key is repeated in each one's env,
+      # not set on the job, so no other step sees it (npm ci's install
+      # scripts included).
+      #
+      # macOS code signing, once there is an Apple Developer cert: add these
+      # to all three attempts' env.
+      #   APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+      #   APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+      #   APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+      #   APPLE_ID: ${{ secrets.APPLE_ID }}
+      #   APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+      #   APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      - name: Build and release
+        id: release1
+        continue-on-error: true
+        uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5  # v0.6.2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Updater signing key (generate with: npx tauri signer generate)
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          # macOS code signing (optional — set these secrets when you have an Apple Developer cert)
-          # APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          # APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          # APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          # APPLE_ID: ${{ secrets.APPLE_ID }}
-          # APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          # APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         with:
-          action: tauri-apps/tauri-action@v0
-          attempt_limit: 3
-          attempt_delay: 30000
-          with: |
-            projectPath: .
-            tagName: v__VERSION__
-            releaseName: "Smart Job Seeker v__VERSION__"
-            releaseBody: |
-              ## Download
+          projectPath: .
+          tagName: v__VERSION__
+          releaseName: "Smart Job Seeker v__VERSION__"
+          releaseBody: ${{ env.RELEASE_BODY }}
+          releaseDraft: false
+          prerelease: ${{ needs.check-version.outputs.is_prerelease == 'true' }}
+          # MSI doesn't support semver pre-release identifiers (e.g. -beta.1), so skip it for prereleases
+          args: >-
+            ${{ matrix.rust_target && format('--target {0}', matrix.rust_target) || '' }}
+            ${{ steps.bundle-flags.outputs.value }}
 
-              Pick the installer for your platform:
+      - name: Wait before retrying
+        if: steps.release1.outcome == 'failure'
+        run: sleep 30
 
-              - **macOS (Apple Silicon)** — `.dmg` file (aarch64)
-              - **macOS (Intel)** — `.dmg` file (x64)
-              - **Windows** — `.msi` or `.exe` installer
-              - **Linux** — `.AppImage` (universal) or `.deb` (Debian/Ubuntu)
+      - name: Build and release (attempt 2)
+        id: release2
+        if: steps.release1.outcome == 'failure'
+        continue-on-error: true
+        uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5  # v0.6.2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          projectPath: .
+          tagName: v__VERSION__
+          releaseName: "Smart Job Seeker v__VERSION__"
+          releaseBody: ${{ env.RELEASE_BODY }}
+          releaseDraft: false
+          prerelease: ${{ needs.check-version.outputs.is_prerelease == 'true' }}
+          args: >-
+            ${{ matrix.rust_target && format('--target {0}', matrix.rust_target) || '' }}
+            ${{ steps.bundle-flags.outputs.value }}
 
-              ## First launch
+      - name: Wait before retrying
+        if: steps.release2.outcome == 'failure'
+        run: sleep 30
 
-              The app downloads Chrome for Testing (~175MB) on first launch. This is a one-time download.
-
-              ## Platform notes
-
-              **macOS**: If you see "unidentified developer", right-click the app
-              and choose **Open**, then click **Open** again in the dialog.
-
-              **Windows**: If SmartScreen shows a warning, click **More info** then **Run anyway**.
-
-              ## Build from source
-
-              See [BUILD.md](https://github.com/gitaarik/sjs-desktop/blob/main/BUILD.md) for instructions.
-            releaseDraft: false
-            prerelease: ${{ needs.check-version.outputs.is_prerelease == 'true' }}
-            # MSI doesn't support semver pre-release identifiers (e.g. -beta.1), so skip it for prereleases
-            args: >-
-              ${{ matrix.rust_target && format('--target {0}', matrix.rust_target) || '' }}
-              ${{ steps.bundle-flags.outputs.value }}
+      - name: Build and release (attempt 3)
+        if: steps.release2.outcome == 'failure'
+        uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5  # v0.6.2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          projectPath: .
+          tagName: v__VERSION__
+          releaseName: "Smart Job Seeker v__VERSION__"
+          releaseBody: ${{ env.RELEASE_BODY }}
+          releaseDraft: false
+          prerelease: ${{ needs.check-version.outputs.is_prerelease == 'true' }}
+          args: >-
+            ${{ matrix.rust_target && format('--target {0}', matrix.rust_target) || '' }}
+            ${{ steps.bundle-flags.outputs.value }}
 
   # For beta releases: copy latest.json to the pinned beta-latest release
   # so the beta update channel always has a stable endpoint
@@ -208,6 +269,8 @@ jobs:
     needs: [check-version, build]
     if: needs.check-version.outputs.is_prerelease == 'true'
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: Wait for release assets to be uploaded
         run: sleep 30
