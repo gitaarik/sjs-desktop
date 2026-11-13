@@ -6,12 +6,12 @@
  */
 
 import { loadConfig, saveConfig } from "./config";
-import { connect, disconnect } from "./tunnel-client";
+import { APP_VERSION, connect, disconnect } from "./tunnel-client";
 import readline from "readline";
 
 async function main(): Promise<void> {
   console.log("===========================================");
-  console.log("  Smart Job Seeker — Desktop App v0.1.0");
+  console.log(`  Smart Job Seeker — Desktop App v${APP_VERSION}`);
   console.log("===========================================\n");
 
   const config = loadConfig();

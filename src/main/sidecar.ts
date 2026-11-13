@@ -7,7 +7,7 @@
  */
 
 import { loadConfig, saveConfig, type AppConfig } from "./config";
-import { connect, disconnect, getStatus } from "./tunnel-client";
+import { APP_VERSION, connect, disconnect, getStatus } from "./tunnel-client";
 import { ensureChromeForTesting, getInstalledVersion } from "./chrome-for-testing";
 import { launchChrome, type ChromeSession } from "./chrome-manager";
 import readline from "readline";
@@ -230,7 +230,7 @@ async function handleEnsureChrome(): Promise<void> {
 async function main(): Promise<void> {
   config = loadConfig();
 
-  emitLog("SJS Sidecar v0.1.0 started");
+  emitLog(`SJS Sidecar v${APP_VERSION} started`);
   emitStatus("disconnected");
 
   // Report config state

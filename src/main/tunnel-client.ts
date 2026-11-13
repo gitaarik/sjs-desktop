@@ -19,7 +19,7 @@ import { TunnelConnection } from "./tunnel-connection";
 // package.json by scripts/release.sh, and the release workflow refuses a tag
 // it does not match: by hand it fell behind, and v0.4.3-beta.2 reported itself
 // as 0.4.0-beta.2.
-const APP_VERSION = "0.4.3-beta.2";
+export const APP_VERSION = "0.4.3-beta.2";
 
 /**
  * Look up a page target ID from Chrome's HTTP /json endpoint.

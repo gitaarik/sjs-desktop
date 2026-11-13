@@ -28,7 +28,7 @@ jobs:
             exit 1
           fi
           echo "Tag v$TAG matches tauri.conf.json version $VERSION"
-          SIDECAR=$(sed -nE 's/^const APP_VERSION = "([^"]*)";/\1/p' src/main/tunnel-client.ts)
+          SIDECAR=$(sed -nE 's/^export const APP_VERSION = "([^"]*)";/\1/p' src/main/tunnel-client.ts)
           if [ "$TAG" != "$SIDECAR" ]; then
             echo "::error::Tag v$TAG does not match APP_VERSION $SIDECAR in src/main/tunnel-client.ts"
             exit 1
@@ -52,19 +52,19 @@ jobs:
         include:
           - platform: ubuntu-22.04
             rust_target: ""
-            sidecar_pkg_target: node20-linux-x64
+            sidecar_pkg_target: node22-linux-x64
             sidecar_triple: x86_64-unknown-linux-gnu
           - platform: macos-latest
             rust_target: aarch64-apple-darwin
-            sidecar_pkg_target: node20-macos-arm64
+            sidecar_pkg_target: node22-macos-arm64
             sidecar_triple: aarch64-apple-darwin
           - platform: macos-latest
             rust_target: x86_64-apple-darwin
-            sidecar_pkg_target: node20-macos-x64
+            sidecar_pkg_target: node22-macos-x64
             sidecar_triple: x86_64-apple-darwin
           - platform: windows-latest
             rust_target: ""
-            sidecar_pkg_target: node20-win-x64
+            sidecar_pkg_target: node22-win-x64
             sidecar_triple: x86_64-pc-windows-msvc
 
     runs-on: ${{ matrix.platform }}
@@ -88,12 +88,19 @@ jobs:
 
         The app downloads Chrome for Testing (~175MB) on first launch. This is a one-time download.
 
+        Then make a device key in Smart Job Seeker under **Job Import > My Devices > New Key**,
+        paste it into the app and click **Connect**.
+
         ## Platform notes
 
-        **macOS**: If you see "unidentified developer", right-click the app
-        and choose **Open**, then click **Open** again in the dialog.
+        **macOS**: The app is not notarized yet, so the first launch is refused. Open
+        **System Settings > Privacy & Security**, scroll down, click **Open Anyway** next to
+        Smart Job Seeker, and confirm.
 
         **Windows**: If SmartScreen shows a warning, click **More info** then **Run anyway**.
+
+        **Linux**: The AppImage updates itself; the `.deb` and `.rpm` do not. On Ubuntu 22.04 and
+        newer the AppImage needs `sudo apt install libfuse2`.
 
         ## Build from source
 
@@ -204,7 +211,7 @@ jobs:
       - name: Build and release
         id: release1
         continue-on-error: true
-        uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5  # v0.6.2
+        uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f  # v1.0.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Updater signing key (generate with: npx tauri signer generate)
@@ -230,7 +237,7 @@ jobs:
         id: release2
         if: steps.release1.outcome == 'failure'
         continue-on-error: true
-        uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5  # v0.6.2
+        uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f  # v1.0.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -252,7 +259,7 @@ jobs:
 
       - name: Build and release (attempt 3)
         if: steps.release2.outcome == 'failure'
-        uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5  # v0.6.2
+        uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f  # v1.0.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}

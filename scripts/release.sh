@@ -154,7 +154,7 @@ npm version "$NEW_VERSION" --no-git-tag-version > /dev/null
 # --- Bump the version the sidecar reports to the server ---
 
 echo "==> Bumping APP_VERSION in tunnel-client.ts..."
-sed -i.bak -E "s/^const APP_VERSION = \"[^\"]*\";/const APP_VERSION = \"$NEW_VERSION\";/" src/main/tunnel-client.ts
+sed -i.bak -E "s/^export const APP_VERSION = \"[^\"]*\";/export const APP_VERSION = \"$NEW_VERSION\";/" src/main/tunnel-client.ts
 rm -f src/main/tunnel-client.ts.bak
 
 # --- Commit, tag, push ---
