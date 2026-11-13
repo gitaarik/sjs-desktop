@@ -69,6 +69,14 @@ jobs:
 
     runs-on: ${{ matrix.platform }}
 
+    # Every run: block here is bash. Without this, Windows runs them in
+    # PowerShell, which cannot parse a backslash line continuation: the
+    # sidecar step failed on Windows from ecd4fab (#18) on, so v0.4.3-beta.2
+    # and beta.3 shipped no Windows build.
+    defaults:
+      run:
+        shell: bash
+
     permissions:
       contents: write
 
@@ -172,8 +180,9 @@ jobs:
 
       # Compute conditional tauri-action --bundles flag. Extracted into its
       # own step so the args: block below stays under the line-length budget.
-      # Windows MSI doesn't support semver pre-release identifiers (e.g.
-      # -beta.1), so on prerelease Windows builds we force --bundles nsis.
+      # MSI and RPM both refuse a semver pre-release version (e.g. -beta.1:
+      # RPM allows no '-' in a version), so prerelease builds skip them:
+      # NSIS only on Windows, AppImage and deb on Linux.
       - id: bundle-flags
         env:
           IS_PRERELEASE: ${{ needs.check-version.outputs.is_prerelease }}
@@ -181,6 +190,8 @@ jobs:
         run: |
           if [ "$IS_PRERELEASE" = "true" ] && [ "$PLATFORM" = "windows-latest" ]; then
             echo "value=--bundles nsis" >> "$GITHUB_OUTPUT"
+          elif [ "$IS_PRERELEASE" = "true" ] && [ "$PLATFORM" = "ubuntu-22.04" ]; then
+            echo "value=--bundles appimage,deb" >> "$GITHUB_OUTPUT"
           else
             echo "value=" >> "$GITHUB_OUTPUT"
           fi
