@@ -9,7 +9,7 @@ import path from "path";
 import os from "os";
 
 export interface AppConfig {
-  /** Server preset (preview, dev, custom) */
+  /** Server preset (production, preview, dev, custom) */
   server: string;
   /** Server tunnel WebSocket URL (e.g., wss://smartjobseeker.com/tunnel) */
   serverUrl: string;
@@ -28,7 +28,9 @@ export interface AppConfig {
 }
 
 const DEFAULT_CONFIG: AppConfig = {
-  server: "dev",
+  // Empty, so the UI picks its own default (production) for a fresh install.
+  // It was "dev", which sent a stranger's first connect to the dev box.
+  server: "",
   serverUrl: "",
   apiToken: "",
   apiTokens: {},

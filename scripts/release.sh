@@ -119,7 +119,7 @@ fi
 # --- Confirm ---
 
 echo "This will:"
-echo "  1. Bump version to $NEW_VERSION in tauri.conf.json and package.json"
+echo "  1. Bump version to $NEW_VERSION in tauri.conf.json, package.json and tunnel-client.ts"
 echo "  2. Commit, tag ($NEW_TAG), and push"
 echo "  3. GitHub Actions will build release binaries"
 echo ""
@@ -151,11 +151,18 @@ echo "==> Bumping version in package.json..."
 cd "$DESKTOP_DIR"
 npm version "$NEW_VERSION" --no-git-tag-version > /dev/null
 
+# --- Bump the version the sidecar reports to the server ---
+
+echo "==> Bumping APP_VERSION in tunnel-client.ts..."
+sed -i.bak -E "s/^const APP_VERSION = \"[^\"]*\";/const APP_VERSION = \"$NEW_VERSION\";/" src/main/tunnel-client.ts
+rm -f src/main/tunnel-client.ts.bak
+
 # --- Commit, tag, push ---
 
 echo "==> Committing and tagging..."
 cd "$DESKTOP_DIR"
-git add src-tauri/tauri.conf.json package.json package-lock.json 2>/dev/null || git add src-tauri/tauri.conf.json package.json
+git add src-tauri/tauri.conf.json package.json src/main/tunnel-client.ts package-lock.json 2>/dev/null ||
+  git add src-tauri/tauri.conf.json package.json src/main/tunnel-client.ts
 git commit -m "chore(release): $NEW_TAG"
 git tag "$NEW_TAG"
 git push origin main --tags

@@ -28,6 +28,11 @@ jobs:
             exit 1
           fi
           echo "Tag v$TAG matches tauri.conf.json version $VERSION"
+          SIDECAR=$(sed -nE 's/^const APP_VERSION = "([^"]*)";/\1/p' src/main/tunnel-client.ts)
+          if [ "$TAG" != "$SIDECAR" ]; then
+            echo "::error::Tag v$TAG does not match APP_VERSION $SIDECAR in src/main/tunnel-client.ts"
+            exit 1
+          fi
       - name: Detect prerelease
         id: prerelease
         run: |

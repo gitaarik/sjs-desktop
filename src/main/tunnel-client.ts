@@ -15,8 +15,11 @@ import type { AppConfig } from "./config";
 import type { ClientMessage, ServerMessage } from "./protocol";
 import { TunnelConnection } from "./tunnel-connection";
 
-// Keep in sync with package.json version
-const APP_VERSION = "0.4.0-beta.2";
+// Sent to the server on auth, which shows it on the Devices page. Bumped with
+// package.json by scripts/release.sh, and the release workflow refuses a tag
+// it does not match: by hand it fell behind, and v0.4.3-beta.2 reported itself
+// as 0.4.0-beta.2.
+const APP_VERSION = "0.4.3-beta.2";
 
 /**
  * Look up a page target ID from Chrome's HTTP /json endpoint.

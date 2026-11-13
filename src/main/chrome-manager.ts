@@ -91,15 +91,40 @@ function getFreePort(): Promise<number> {
 /**
  * Fetch Chrome's /json/version endpoint.
  */
+/**
+ * The lines of Chrome's stderr worth showing a user: the last ones that read as
+ * an error. Chrome logs plenty of harmless noise there, so plain "last line"
+ * would often be a GCM or dbus warning rather than the reason it quit.
+ */
+export function lastErrorLine(stderr: string): string | null {
+  const lines = stderr
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean);
+  const errors = lines.filter((l) => /error|fatal|missing|cannot|failed|not found/i.test(l));
+  // Two lines, because Chrome tends to give the cause and then a generic
+  // farewell: "Missing X server or $DISPLAY", then "The platform failed to
+  // initialize. Exiting."
+  const picked = errors.length > 0 ? errors.slice(-2) : lines.slice(-1);
+  if (picked.length === 0) return null;
+  return picked
+    .map((l) => l.replace(/^\[[^\]]*\]\s*/, "")) // Chrome's "[pid:tid:date:ERROR:file.cc(123)]"
+    .join(" / ")
+    .slice(0, 240);
+}
+
 function fetchCdpVersion(
   port: number,
   maxRetries = 20,
   retryDelay = 500,
+  gaveUp: () => boolean = () => false,
 ): Promise<Record<string, unknown>> {
   return new Promise((resolve, reject) => {
     let attempts = 0;
 
     const attempt = () => {
+      // The process is gone; the caller already has the reason.
+      if (gaveUp()) return;
       attempts++;
       const req = http.get(`http://127.0.0.1:${port}/json/version`, (res) => {
         let data = "";
@@ -274,13 +299,36 @@ export async function launchChrome(options: {
     console.error(`[Chrome] Process error: ${err.message}`);
   });
 
-  chromeProcess.on("exit", (code) => {
-    console.log(`[Chrome] Process exited with code ${code}`);
+  // Chrome says why it will not start on stderr ("Missing X server or
+  // $DISPLAY", a missing library). Keep the end of it, so a launch that fails
+  // reports that line instead of waiting out the CDP retries and saying only
+  // that Chrome "did not start": the error reaches the server, and from there
+  // the user's run.
+  let stderrTail = "";
+  chromeProcess.stderr?.on("data", (chunk: Buffer) => {
+    stderrTail = (stderrTail + chunk.toString()).slice(-4000);
   });
+
+  const exited = new Promise<never>((_, reject) => {
+    chromeProcess.on("exit", (code) => {
+      console.log(`[Chrome] Process exited with code ${code}`);
+      const reason = lastErrorLine(stderrTail);
+      if (reason) console.log(`[Chrome] ${reason}`);
+      reject(
+        new Error(`Chrome exited with code ${code} while starting${reason ? `: ${reason}` : ""}`),
+      );
+    });
+  });
+  // Once CDP is up this promise is no longer awaited; a later exit must not
+  // surface as an unhandled rejection.
+  exited.catch(() => {});
 
   // Wait for Chrome to start and expose CDP
   console.log("[Chrome] Waiting for CDP endpoint...");
-  const versionInfo = await fetchCdpVersion(port);
+  const versionInfo = await Promise.race([
+    fetchCdpVersion(port, 20, 500, () => chromeProcess.exitCode !== null),
+    exited,
+  ]);
   const cdpWsUrl = versionInfo.webSocketDebuggerUrl as string;
   console.log(`[Chrome] Ready: ${versionInfo.Browser}`);
   console.log(`[Chrome] CDP WebSocket: ${cdpWsUrl}`);

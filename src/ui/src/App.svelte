@@ -1,12 +1,35 @@
 <script lang="ts">
   import { onMount, onDestroy, tick } from "svelte";
 
-  // Server options
+  // Server options. Production first and the default: it is where everyone who
+  // isn't developing SJS signs up. www is the host Caddy serves the tunnel on;
+  // the bare domain only redirects.
+  const PRODUCTION_URL = "wss://www.smartjobseeker.com/tunnel";
   const SERVERS = [
+    { id: "production", label: "Smart Job Seeker", url: PRODUCTION_URL },
     { id: "preview", label: "Preview", url: "wss://preview.smartjobseeker.com/tunnel" },
     { id: "dev", label: "Dev", url: "wss://dev.smartjobseeker.com/tunnel" },
     { id: "custom", label: "Custom", url: "" },
   ] as const;
+
+  // Where a device key is made, on the server the app is pointed at.
+  $: devicesPageUrl = (() => {
+    try {
+      const u = new URL(serverUrl || PRODUCTION_URL);
+      return `${u.protocol === "ws:" ? "http:" : "https:"}//${u.host}/jobs/import/devices`;
+    } catch {
+      return "https://www.smartjobseeker.com/jobs/import/devices";
+    }
+  })();
+
+  async function openExternal(url: string) {
+    try {
+      const { open } = await import("@tauri-apps/plugin-shell");
+      await open(url);
+    } catch {
+      window.open(url, "_blank");
+    }
+  }
 
   // State
   let server = "";
@@ -86,13 +109,17 @@
             const match = SERVERS.find((s) => s.url === serverUrl);
             server = match ? match.id : "custom";
           }
-          // Migrate: production was removed, treat as custom
-          if (server === "production") {
-            server = "custom";
-            if (!serverUrl) serverUrl = "wss://smartjobseeker.com/tunnel";
+          // Migrate: a custom server that is production by another name (the
+          // preset was once removed, and installs made then were moved to
+          // custom with the bare domain).
+          if (
+            server === "custom" &&
+            /^wss:\/\/(www\.)?smartjobseeker\.com\/tunnel\/?$/.test(serverUrl)
+          ) {
+            server = "production";
           }
-          // Default to preview if nothing is set
-          if (!server) server = "preview";
+          // A fresh install connects to production.
+          if (!server) server = "production";
           // Ensure active token is in the map so server-switch reactive works
           if (apiToken && server && !apiTokens[server]) {
             apiTokens[server] = apiToken;
@@ -305,8 +332,14 @@
         }
       }
     }
-    if (!apiToken.trim()) {
-      tokenError = "API token is required";
+    const key = apiToken.trim();
+    if (!key) {
+      tokenError = "Paste the device key from Smart Job Seeker";
+    } else if (key.startsWith("sjsmcp_")) {
+      // The Connected apps page hands out a key of its own, for AI assistants.
+      tokenError = "That is a connected-app key. This needs a device key, from My Devices.";
+    } else if (!key.startsWith("sjs_")) {
+      tokenError = "A device key starts with sjs_";
     }
     return !urlError && !tokenError;
   }
@@ -474,7 +507,7 @@
       {/if}
 
       <label>
-        API Token
+        Device key
         <div class="token-input-wrap">
           {#if showToken}
             <input
@@ -505,6 +538,12 @@
           </button>
         </div>
         {#if tokenError}<span class="field-error">{tokenError}</span>{/if}
+        <span class="field-hint">
+          Make one in Smart Job Seeker under
+          <button type="button" class="btn-link" on:click={() => openExternal(devicesPageUrl)}
+            >Job Import → My Devices</button
+          >, with <strong>New Key</strong>.
+        </span>
       </label>
 
       <label class="checkbox">
@@ -827,6 +866,18 @@
     color: var(--error-field);
     font-size: 12px;
     margin-top: 4px;
+  }
+
+  .field-hint {
+    display: block;
+    color: var(--text-muted);
+    font-size: 12px;
+    font-weight: 400;
+    margin-top: 4px;
+  }
+
+  .field-hint .btn-link {
+    padding: 0;
   }
 
   .form-error-banner {
